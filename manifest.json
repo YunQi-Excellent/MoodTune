@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "MoodTune",
+  "version": "2.4.0",
+  "description": "基于大模型的音乐推荐，适配网易云音乐",
+  "permissions": [
+    "cookies",
+    "clipboardWrite",
+    "storage",
+    "unlimitedStorage",
+    "sidePanel",
+    "scripting",
+    "tabs",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "https://music.163.com/*",
+    "https://*.music.163.com/*",
+    "https://*.music.126.net/*"
+  ],
+  "optional_host_permissions": ["https://*/*"],
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; media-src https: http: blob: data:; connect-src 'self' https: http:;"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "打开网易云工具"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  }
+}
