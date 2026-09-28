@@ -293,21 +293,12 @@ moodtune/
 - **Side Panel**：右键侧边栏 → 检查 → Console
 - **Offscreen**：`chrome://extensions` → 本扩展 → 检查视图 → `offscreen.html`
 
-### 提交代码
-
-欢迎 PR！提交前请：
-
-1. 说明动机和改动范围
-2. 大改动先开 issue 讨论
-3. 保持提示词和业务逻辑分离
-
 ---
 
 ## 🙏 致谢
 
 - NeteaseCloudMusicApi —— 社区逆向的网易云接口文档
 - Lucide —— 图标
-- 所有用过的 AI 音乐助手项目，你们让我知道这件事可以做
 
 ---
 
