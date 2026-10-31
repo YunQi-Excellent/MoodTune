@@ -2,40 +2,13 @@ import { EQ_FREQUENCIES } from './src/core/constants.js';
 import { defaultEq } from './src/core/eq.js';
 import { createId } from './src/core/ids.js';
 
-const $ = s => document.querySelector(s);
-const $$ = s => [...document.querySelectorAll(s)];
+import { $, $$ } from './src/app/dom.js';
+import { escapeHtml, fmtClock, fmtDate } from './src/app/sidepanel/format.js';
+import { renderAgentBody, renderPlanCard } from './src/app/sidepanel/cards.js';
+import { createPlayerControls } from './src/app/sidepanel/player.js';
 
 /* ================= 工具 ================= */
-const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g,
-  c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
-
-function fmtDuration(ms) {
-  if (!ms || ms <= 0) return '--:--';
-  const s = Math.round(ms / 1000);
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return `${m}:${String(r).padStart(2, '0')}`;
-}
-function fmtTime(sec) {
-  if (!Number.isFinite(sec) || sec < 0) return '0:00';
-  const m = Math.floor(sec / 60);
-  const r = Math.floor(sec % 60);
-  return `${m}:${String(r).padStart(2, '0')}`;
-}
-function fmtClock(ts) {
-  const d = new Date(ts);
-  const pad = n => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-function fmtDate(ts) {
-  if (!ts) return '';
-  const d = new Date(ts);
-  const pad = n => String(n).padStart(2, '0');
-  return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-function randId(p = 'id') {
-  return createId(p);
-}
+const randId = (prefix = 'id') => createId(prefix);
 async function sendMsg(msg) {
   try { return await chrome.runtime.sendMessage(msg); }
   catch (e) { console.warn('[sidepanel] sendMessage 失败', e); return null; }
@@ -167,7 +140,7 @@ $('#sessionList').addEventListener('click', async e => {
           updateCartUI();
         }
         closeSessionDrawer();
-        refreshPlayer();
+        player.refresh();
       } else {
         pushLog('err', '恢复失败：' + (r?.error || '未知'));
       }
@@ -301,7 +274,9 @@ function refreshPlanCards() {
     const node = state.messageNodes.get(m.id);
     if (!node) continue;
     const body = node.querySelector('.body');
-    if (body) body.innerHTML = renderPlanCard(m);
+    if (!body) continue;
+    const cartIds = new Set((state.currentSession?.cart || []).map(song => song.id));
+    body.innerHTML = renderPlanCard(m, { cartIds });
   }
 }
 
@@ -397,7 +372,7 @@ $('#cartSettleBtn').addEventListener('click', async () => {
         updateCartUI();
       }
       closeCartDrawer();
-      refreshPlayer();
+      player.refresh();
     } else {
       pushLog('err', '结算失败：' + (r?.error || '未知'));
     }
@@ -717,7 +692,8 @@ function appendMessageNode(m, { animate = false } = {}) {
     const isBranchStart = !lastNode || lastNode.classList.contains('msg-user');
 
     node.className = `msg-agent ${m.kind || ''}${isBranchStart ? ' branch-start' : ''}`;
-    const body = renderAgentBody(m);
+    const cartIds = new Set((state.currentSession?.cart || []).map(song => song.id));
+    const body = renderAgentBody(m, { cartIds });
     
     // AI 节点：46px 轨道，分支线 X=32px，卡片向右深度缩进 22px
     node.innerHTML = `
@@ -736,111 +712,6 @@ function appendMessageNode(m, { animate = false } = {}) {
   stream.appendChild(node);
   state.messageNodes.set(m.id, node);
   if (animate) scrollToBottom();
-}
-
-function renderAgentBody(m) {
-  if (m.kind === 'text' || m.kind === 'ack') return `<div>${escapeHtml(m.text || '')}</div>`;
-  if (m.kind === 'error') return `<div class="error-card"><span>⚠️</span><div>${escapeHtml(m.text || '')}</div></div>`;
-  if (m.kind === 'save-card') {
-    const label = m.cardType === 'eq' ? '调音' : '播放列表';
-    const count = m.count ? ` · ${m.count} 首` : '';
-    return `
-      <div class="save-card">
-        <div class="icon">💾</div>
-        <div class="text">已保存${label} <b>「${escapeHtml(m.name)}」</b>${count}<br>
-        <span style="color:var(--fg-3);font-size:11px;">可在 📚 我的内容里查看</span></div>
-      </div>`;
-  }
-  if (m.kind === 'plan-card') return renderPlanCard(m);
-  if (m.kind === 'eq-card') return renderEqCard(m);
-  return `<div>${escapeHtml(m.text || '')}</div>`;
-}
-
-/* 推荐歌单：彻底移除 COMMIT // 01 标签 */
-function renderPlanCard(m) {
-  const picks = m.picks || [];
-  const stats = m.stats || {};
-  const cartIds = new Set((state.currentSession?.cart || []).map(s => s.id));
-
-  const tracksHtml = picks.map(p => {
-    const inCart = cartIds.has(p.id);
-    return `
-      <label class="track-item" style="${inCart ? 'opacity:0.55;' : ''}">
-        <input type="checkbox" class="track-cb" data-track-id="${p.id}" ${inCart ? '' : 'checked'} ${inCart ? 'disabled' : ''}>
-        ${p.cover ? `<img class="cover" src="${escapeHtml(p.cover)}" loading="lazy" alt="">` : '<div class="cover"></div>'}
-        <div class="info">
-          <div class="title">${escapeHtml(p.name)} ${inCart ? '<span style="font-size:10px;color:var(--brand-600);font-weight:500;">· 已在歌单</span>' : ''}</div>
-          <div class="artist">${escapeHtml(p.artists)}</div>
-          ${p.reason ? `<div class="reason">💡 ${escapeHtml(p.reason)}</div>` : ''}
-        </div>
-      </label>
-    `;
-  }).join('');
-
-  return `
-    <div class="plan-header">
-      <div class="plan-title">
-        <span>✨ 推荐临时歌单</span>
-      </div>
-      <span class="badge">${picks.length} 首</span>
-    </div>
-    <div class="stats-line">
-      候选 ${stats.total || 0} 首 · 精排 ${stats.filtered || 0} 首${cartIds.size > 0 ? ` · 会话歌单已有 ${cartIds.size} 首` : ''}
-    </div>
-    <div class="track-list">${tracksHtml || '<div style="color:var(--fg-3);text-align:center;padding:12px;">没有歌曲</div>'}</div>
-    <div class="card-actions">
-      <button class="btn" data-action="add-to-cart" data-msg-id="${m.id}">🎵 加入歌单</button>
-    </div>
-  `;
-}
-
-/* 声学 EQ 调校：彻底移除 COMMIT // 02 标签 */
-function renderEqCard(m) {
-  const eq = m.eq || { preampDb: 0, bands: [] };
-  const reason = m.reason || '';
-  const preamp = Number(eq.preampDb) || 0;
-
-  const preampHtml = `
-    <div class="eq-slider">
-      <span class="label strong">前级</span>
-      <input type="range" min="-12" max="3" step="1" value="${preamp}"
-             data-eq-band="preamp" data-msg-id="${m.id}">
-      <span class="value">${preamp > 0 ? '+' : ''}${preamp} dB</span>
-    </div>
-  `;
-
-  const bandsHtml = EQ_FREQUENCIES.map(f => {
-    const b = (eq.bands || []).find(x => Number(x.frequencyHz) === f);
-    const v = b ? Number(b.gainDb) : 0;
-    const label = f >= 1000 ? `${f/1000} kHz` : `${f} Hz`;
-    return `
-      <div class="eq-slider">
-        <span class="label">${label}</span>
-        <input type="range" min="-12" max="12" step="1" value="${v}"
-               data-eq-band="${f}" data-msg-id="${m.id}">
-        <span class="value">${v > 0 ? '+' : ''}${v} dB</span>
-      </div>
-    `;
-  }).join('');
-
-  return `
-    <div class="eq-header">
-      <div class="title">
-        <span>🎛 声学 EQ 调校</span>
-      </div>
-      <span class="badge yellow">${preamp > 0 ? '+' : ''}${preamp} dB 前级</span>
-    </div>
-    ${reason ? `<div class="stats-line yellow">💡 ${escapeHtml(reason)}</div>` : ''}
-    <div style="margin: 8px 0 10px;">
-      ${preampHtml}
-      <hr class="eq-divider">
-      ${bandsHtml}
-    </div>
-    <div class="card-actions">
-      <button class="btn ghost" data-action="reset-eq-card" data-msg-id="${m.id}" style="flex:0.5;">重置</button>
-      <button class="btn" data-action="save-eq-card" data-msg-id="${m.id}" style="flex:1;">💾 保存这套调音</button>
-    </div>
-  `;
 }
 
 /* ================= 卡片交互 ================= */
@@ -1137,7 +1008,7 @@ function finishThinking() {
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg?.target) return;
   if (msg.target === 'sidepanel' && msg.type === 'PLAYER_STATE_CHANGED') {
-    applyPlayerState(msg.payload);
+    player.applyState(msg.payload);
     return;
   }
   if (msg.target === 'sidepanel' && msg.type === 'CHAT_STREAM_CHUNK') {
@@ -1207,59 +1078,8 @@ async function loadCurrentSession() {
   updateCartUI();
 }
 
-/* ================= 播放器状态 ================= */
-const playerEls = {
-  cover: $('#playerCover'), title: $('#playerTitle'), artist: $('#playerArtist'),
-  current: $('#playerCurrent'), duration: $('#playerDuration'),
-  seek: $('#playerSeek'), play: $('#playerPlay'),
-  prev: $('#playerPrev'), next: $('#playerNext'), volume: $('#playerVolume'),
-};
-let playerSeeking = false;
-function applyPlayerState(state) {
-  if (!state) return;
-  const s = state;
-  if (s.currentSong) {
-    if (s.currentSong.cover) {
-      playerEls.cover.src = s.currentSong.cover;
-      playerEls.cover.style.visibility = 'visible';
-    } else playerEls.cover.style.visibility = 'hidden';
-    playerEls.title.textContent = s.currentSong.name || '未知';
-    playerEls.artist.textContent = s.currentSong.artists || '';
-  } else {
-    playerEls.cover.style.visibility = 'hidden';
-    playerEls.title.textContent = '未播放';
-    playerEls.artist.textContent = '播放队列为空';
-  }
-  if (s.loading) { playerEls.play.textContent = '⏳'; playerEls.play.disabled = true; }
-  else { playerEls.play.textContent = s.playing ? '⏸' : '▶'; playerEls.play.disabled = false; }
-  if (!playerSeeking) {
-    playerEls.seek.max = s.duration || 1;
-    playerEls.seek.value = s.currentTime || 0;
-    playerEls.current.textContent = fmtTime(s.currentTime);
-  }
-  playerEls.duration.textContent = fmtTime(s.duration);
-  if (typeof s.volume === 'number') playerEls.volume.value = s.volume;
-}
-playerEls.play.addEventListener('click', () => sendMsg({ target: 'background', type: 'PLAYER_TOGGLE' }));
-playerEls.next.addEventListener('click', () => sendMsg({ target: 'background', type: 'PLAYER_NEXT' }));
-playerEls.prev.addEventListener('click', () => sendMsg({ target: 'background', type: 'PLAYER_PREV' }));
-playerEls.seek.addEventListener('pointerdown', () => { playerSeeking = true; });
-playerEls.seek.addEventListener('input', () => {
-  playerEls.current.textContent = fmtTime(parseFloat(playerEls.seek.value));
-});
-playerEls.seek.addEventListener('change', () => {
-  const t = parseFloat(playerEls.seek.value);
-  sendMsg({ target: 'background', type: 'PLAYER_SEEK', payload: { time: t } });
-  setTimeout(() => { playerSeeking = false; }, 300);
-});
-playerEls.volume.addEventListener('input', () => {
-  const v = parseFloat(playerEls.volume.value);
-  sendMsg({ target: 'background', type: 'PLAYER_SET_VOLUME', payload: { volume: v } });
-});
-async function refreshPlayer() {
-  const r = await sendMsg({ target: 'background', type: 'PLAYER_GET_STATE' });
-  if (r?.ok && r.state) applyPlayerState(r.state);
-}
+/* ================= 播放器 ================= */
+const player = createPlayerControls({ send: sendMsg });
 
 /* ================= 主题 ================= */
 function applyTheme() {
@@ -1285,13 +1105,13 @@ applyTheme();
   await refreshModelBadge();
   await refreshSessions();
   await loadCurrentSession();
-  await refreshPlayer();
+  await player.refresh();
 })();
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     refreshModelBadge();
-    refreshPlayer();
+    player.refresh();
     refreshSessions();
   }
 });
