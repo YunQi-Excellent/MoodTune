@@ -42,6 +42,9 @@ const fetchStub = vi.fn(async input => {
   if (url.pathname === '/api/cloudsearch/get/web') {
     return json({ code: 200, result: { songs: [rawCloudSong], songCount: 1 } });
   }
+  if (url.pathname === '/api/song/enhance/player/url/v1') {
+    return json({ code: 200, data: [{ url: 'http://m10.music.126.net/a.mp3' }] });
+  }
   throw new Error(`unexpected URL: ${url}`);
 });
 
@@ -94,5 +97,24 @@ describe('background → provider 接线', () => {
       name: '深夜写代码',
       isOwn: true,
     });
+  });
+
+  it('PLAYER_RESOLVE_URL 走 provider 解析并升级 https', async () => {
+    const result = await callBackground({
+      target: 'background',
+      type: 'PLAYER_RESOLVE_URL',
+      payload: { song: { id: 123, provider: 'netease' } },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      url: 'https://m10.music.126.net/a.mp3',
+    });
+  });
+
+  it('pausePageAudio 走 provider 的外部播放器适配器', async () => {
+    const result = await callBackground({ action: 'pausePageAudio' });
+
+    expect(result.ok).toBe(true);
   });
 });

@@ -2,8 +2,9 @@
 // 同时承载 Web Audio EQ 处理
 // 注意：不直接访问 chrome.storage（某些环境不可用），持久化通过 background 中继
 
-import { EQ_FREQUENCIES, PLAYER_DEFAULTS } from './src/core/constants.js';
+import { DEFAULT_PROVIDER_ID, EQ_FREQUENCIES, PLAYER_DEFAULTS } from './src/core/constants.js';
 import { dbToGain, defaultEq, isEqValid, normalizeEq } from './src/core/eq.js';
+import { trackKey } from './src/core/track.js';
 
 const audioEl = document.getElementById('offscreenAudio');
 
@@ -160,27 +161,29 @@ function getEq() {
 /* =====================================================
    Wire
    ===================================================== */
+function toWireSong(song) {
+  const providerId = song.providerId
+    ?? (song.id === undefined || song.id === null ? '' : String(song.id));
+
+  return {
+    id: song.id,
+    provider: song.provider || DEFAULT_PROVIDER_ID,
+    providerId,
+    key: trackKey(song),
+    name: song.name,
+    artists: song.artists,
+    album: song.album || '',
+    durationMs: song.durationMs,
+    cover: song.cover || '',
+    link: song.link || ''
+  };
+}
+
 function toWire() {
   return {
-    playlist: state.playlist.map(s => ({
-      id: s.id,
-      name: s.name,
-      artists: s.artists,
-      album: s.album || '',
-      durationMs: s.durationMs,
-      cover: s.cover || '',
-      link: s.link || ''
-    })),
+    playlist: state.playlist.map(toWireSong),
     currentIndex: state.currentIndex,
-    currentSong: state.currentSong ? {
-      id: state.currentSong.id,
-      name: state.currentSong.name,
-      artists: state.currentSong.artists,
-      album: state.currentSong.album || '',
-      cover: state.currentSong.cover,
-      durationMs: state.currentSong.durationMs,
-      link: state.currentSong.link || ''
-    } : null,
+    currentSong: state.currentSong ? toWireSong(state.currentSong) : null,
     playing: state.playing,
     currentTime: state.currentTime,
     duration: state.duration,
@@ -199,32 +202,8 @@ function broadcastState() {
 }
 
 /* =====================================================
-   音频源
+   音频源：由 background / provider 解析
    ===================================================== */
-function normalizeUrl(url) {
-  if (typeof url !== 'string') return url;
-  return url.replace(/^http:\/\//i, 'https://');
-}
-
-async function fetchSongUrl(songId) {
-  const tries = [
-    `https://music.163.com/api/song/enhance/player/url/v1?ids=[${songId}]&level=exhigh&encodeType=aac`,
-    `https://music.163.com/api/song/enhance/player/url?ids=[${songId}]&br=320000`,
-    `https://music.163.com/api/song/enhance/player/url?ids=[${songId}]&br=128000`
-  ];
-  for (const url of tries) {
-    try {
-      const res = await fetch(url, { credentials: 'include' });
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (data.code === 200) {
-        const item = data.data?.[0];
-        if (item?.url) return normalizeUrl(item.url);
-      }
-    } catch {}
-  }
-  throw new Error('无法获取播放地址（可能是 VIP 或版权限制）');
-}
 
 /* =====================================================
    播放控制
@@ -241,8 +220,12 @@ async function loadAndPlay(index) {
   broadcastState();
 
   try {
-    const url = await fetchSongUrl(song.id);
-    audioEl.src = url;
+    const resolved = await sendToBackground('PLAYER_RESOLVE_URL', { song });
+    if (!resolved?.ok || !resolved.url) {
+      throw new Error(resolved?.error || '无法获取播放地址');
+    }
+
+    audioEl.src = resolved.url;
     audioEl.load();
     await audioEl.play();
     state.playing = true;

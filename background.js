@@ -17,7 +17,8 @@ import { defaultEq, normalizeEq } from './src/core/eq.js';
 import { createId } from './src/core/ids.js';
 import { extractJson } from './src/core/json.js';
 import { sanitizeTrack, trackKey } from './src/core/track.js';
-import { getDefaultProvider } from './src/providers/index.js';
+import { createProviderRegistry } from './src/providers/index.js';
+import { createNeteaseExternalPlayer } from './src/app/background/netease-external-player.js';
 
 import {
   getFsStatus,
@@ -41,6 +42,10 @@ const SAVED_PLAYLISTS_LIMIT = 100;
 const EQ_PRESETS_KEY = 'eqPresets';
 const SESSIONS_KEY = 'chatSessions';
 const CURRENT_SESSION_KEY = 'currentSessionId';
+
+const musicProviders = createProviderRegistry({
+  externalPlayer: createNeteaseExternalPlayer(),
+});
 
 /* =====================================================
    保存的播放列表
@@ -305,7 +310,7 @@ async function cartSettle(sessionId) {
     } catch {}
   }
 
-  await pausePageAudio();
+  await pausePlatformPlayback();
   await sendToOffscreen('PLAYER_SET_PLAYLIST', { songs: cart, autoPlay: true });
 
   const result = {
@@ -343,7 +348,7 @@ async function restoreSession(id) {
     }
     if (Array.isArray(r.playlist) && r.playlist.length > 0) {
       try {
-        await pausePageAudio();
+        await pausePlatformPlayback();
         await sendToOffscreen('PLAYER_SET_PLAYLIST', { songs: r.playlist, autoPlay: true });
         result.songCount = r.playlist.length;
         result.messages.push(`已恢复 ${r.playlist.length} 首歌`);
@@ -360,7 +365,7 @@ async function restoreSession(id) {
     }
     if (Array.isArray(target.playlistSnapshot) && target.playlistSnapshot.length > 0) {
       try {
-        await pausePageAudio();
+        await pausePlatformPlayback();
         await sendToOffscreen('PLAYER_SET_PLAYLIST', { songs: target.playlistSnapshot, autoPlay: true });
         result.songCount = target.playlistSnapshot.length;
       } catch {}
@@ -451,9 +456,15 @@ async function clearIntentThinking() {
    音乐平台适配层
    ===================================================== */
 function requireProvider() {
-  const provider = getDefaultProvider();
+  const provider = musicProviders.primary;
   if (!provider) throw new Error('未注册音乐平台');
   return provider;
+}
+
+async function pausePlatformPlayback() {
+  try {
+    await requireProvider().pauseExternalPlayback();
+  } catch {}
 }
 
 async function fetchPlaylists() {
@@ -1133,23 +1144,6 @@ async function runEqTuning(userNeed) {
 }
 
 /* =====================================================
-   暂停页面音频
-   ===================================================== */
-async function pausePageAudio() {
-  try {
-    const tabs = await chrome.tabs.query({ url: 'https://music.163.com/*' });
-    for (const tab of tabs) {
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: () => document.querySelectorAll('audio').forEach(a => { try { a.pause(); } catch {} }),
-        });
-      } catch {}
-    }
-  } catch {}
-}
-
-/* =====================================================
    消息路由
    ===================================================== */
 chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
@@ -1252,6 +1246,23 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           eq: r.currentEq || null,
         });
       } catch (e) { sendResponse({ ok: false, error: e?.message || String(e) }); }
+    })();
+    return true;
+  }
+  if (req?.target === 'background' && req?.type === 'PLAYER_RESOLVE_URL') {
+    (async () => {
+      try {
+        const song = req.payload?.song;
+        if (!song) throw new Error('缺少歌曲信息');
+        const provider = song.provider
+          ? musicProviders.get(song.provider)
+          : musicProviders.primary;
+        if (!provider) throw new Error(`未注册的音乐平台：${song.provider || 'unknown'}`);
+        const url = await provider.resolveStreamUrl(song);
+        sendResponse({ ok: true, url });
+      } catch (e) {
+        sendResponse({ ok: false, error: e?.message || String(e) });
+      }
     })();
     return true;
   }
@@ -1554,7 +1565,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   }
 
   if (req?.action === 'pausePageAudio') {
-    (async () => { await pausePageAudio(); sendResponse({ ok: true }); })();
+    (async () => { await pausePlatformPlayback(); sendResponse({ ok: true }); })();
     return true;
   }
 });
