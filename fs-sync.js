@@ -8,9 +8,9 @@
 // =====================================================
 
 import {
-  loadHandle, saveHandle, clearHandle,
+  loadHandle, clearHandle,
   queryPermissionOnly, ensureSubdir,
-  readJson, writeJson, fileExists, removeFile,
+  readJson, writeJson, removeFile,
 } from './fs-manager.js';
 import { storageQueue } from './src/app/storage/storage-queue.js';
 

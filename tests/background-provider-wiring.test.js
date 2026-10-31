@@ -112,6 +112,12 @@ describe('background → provider 接线', () => {
     });
   });
 
+  it('listSessions 走消息路由与会话仓储', async () => {
+    const result = await callBackground({ action: 'listSessions' });
+
+    expect(result).toEqual({ ok: true, sessions: [] });
+  });
+
   it('pausePageAudio 走 provider 的外部播放器适配器', async () => {
     const result = await callBackground({ action: 'pausePageAudio' });
 

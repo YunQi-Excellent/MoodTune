@@ -9,7 +9,6 @@ import {
   DEFAULT_PROVIDER_ID,
   EQ_CONFIG,
   INTENT_CONFIG,
-  PLAYER_DEFAULTS,
   SESSION_CONFIG,
 } from './src/core/constants.js';
 
@@ -18,14 +17,28 @@ import { createId } from './src/core/ids.js';
 import { extractJson } from './src/core/json.js';
 import { sanitizeTrack, trackKey } from './src/core/track.js';
 import { createProviderRegistry } from './src/providers/index.js';
+
 import { createNeteaseExternalPlayer } from './src/app/background/netease-external-player.js';
-import { createSessionStore } from './src/app/storage/sessions.js';
+import { createMessageRouter } from './src/app/background/router.js';
+import { registerBackgroundEvents } from './src/app/background/events.js';
+import { createChatHandlers } from './src/app/background/handlers/chat.js';
+import { createEqHandlers } from './src/app/background/handlers/eq.js';
+import { createFsHandlers } from './src/app/background/handlers/fs.js';
+import { createMusicHandlers } from './src/app/background/handlers/music.js';
+import { createPlayerHandlers } from './src/app/background/handlers/player.js';
+import { createPlaylistHandlers } from './src/app/background/handlers/playlists.js';
+import { createSessionHandlers } from './src/app/background/handlers/sessions.js';
+import { createEqPresetService, createPlaylistService } from './src/app/services/assets.js';
+import { createPlayerService } from './src/app/services/player.js';
+import { createPlayerPreferences } from './src/app/services/preferences.js';
+import { createSessionService } from './src/app/services/sessions.js';
 import { createAssetStore } from './src/app/storage/assets.js';
+import { EQ_PRESETS_KEY, SAVED_PLAYLISTS_KEY } from './src/app/storage/keys.js';
+import { createSessionStore } from './src/app/storage/sessions.js';
 
 import {
   getFsStatus,
   getLastSyncAt,
-  bindFolder,
   unbindFolder,
   pullFromFolder,
   pushToFolder,
@@ -35,20 +48,22 @@ import {
   onHandleSaved,
 } from './fs-sync.js';
 
-let currentIntentAbort = null;
+let currentChatAbort = null;
 let offscreenCreating = null;
 
-const INTENT_STATE_KEY = 'intentState';
-const SAVED_PLAYLISTS_KEY = 'savedPlaylists';
+/** 往侧边栏推事件；侧边栏没打开时静默失败。 */
+const forwardToSidepanel = (type, payload) => {
+  chrome.runtime.sendMessage({ target: 'sidepanel', type, payload }).catch(() => {});
+};
+
 const SAVED_PLAYLISTS_LIMIT = 100;
-const EQ_PRESETS_KEY = 'eqPresets';
 
 const musicProviders = createProviderRegistry({
   externalPlayer: createNeteaseExternalPlayer(),
 });
 
 /* =====================================================
-   仓储实例
+   仓储
    所有 storage 写入都经过 storageQueue，避免并发读改写互相覆盖
    ===================================================== */
 const sessionsStore = createSessionStore({
@@ -74,202 +89,22 @@ const eqPresetsStore = createAssetStore({
 });
 
 /* =====================================================
-   保存的播放列表
+   服务层
+   仓储负责存，服务负责「存之外还要跟播放器做什么」
    ===================================================== */
-function sanitizeSong(song) {
-  return sanitizeTrack(song, { provider: DEFAULT_PROVIDER_ID });
-}
-async function getSavedPlaylists() {
-  return playlistsStore.list();
-}
-async function savePlaylist({ name, songs, source }) {
-  if (!Array.isArray(songs) || songs.length === 0) throw new Error('播放列表为空');
-  return playlistsStore.add({ name, songs: songs.map(sanitizeSong), source });
-}
-async function deletePlaylist(id) {
-  return playlistsStore.remove(id);
-}
-async function renamePlaylist(id, name) {
-  return playlistsStore.rename(id, name);
-}
-async function playSavedPlaylist(id) {
-  const target = await playlistsStore.get(id);
-  if (!target) throw new Error('找不到这个播放列表');
-  await sendToOffscreen('PLAYER_SET_PLAYLIST', { songs: target.songs, autoPlay: true });
-  return target;
-}
+const playerPrefs = createPlayerPreferences({ area: chrome.storage.local });
 
-/* =====================================================
-   EQ 预设
-   ===================================================== */
-async function getEqPresets() {
-  return eqPresetsStore.list();
-}
-async function saveEqPreset({ name, eq, source }) {
-  if (!eq) throw new Error('没有可保存的调音');
-  return eqPresetsStore.add({ name, eq: normalizeEq(eq), source });
-}
-async function deleteEqPreset(id) {
-  return eqPresetsStore.remove(id);
-}
-async function renameEqPreset(id, name) {
-  return eqPresetsStore.rename(id, name);
-}
-async function applyEqPreset(id) {
-  const target = await eqPresetsStore.get(id);
-  if (!target) throw new Error('找不到这个调音');
-  const r = await sendToOffscreen('EQ_SET', { eq: target.eq });
-  return { preset: target, eq: r?.eq };
-}
+const player = createPlayerService({
+  send: (type, payload) => sendToOffscreen(type, payload),
+  providers: musicProviders,
+  prefs: playerPrefs,
+});
 
-/* =====================================================
-   Session（含 cart / result）
-   ===================================================== */
-async function getSessions() {
-  return sessionsStore.list();
-}
-async function getCurrentSession() {
-  return sessionsStore.getCurrent();
-}
-async function createSession(name) {
-  return sessionsStore.create(name);
-}
-async function switchSession(id) {
-  return sessionsStore.switchTo(id);
-}
-async function deleteSession(id) {
-  return sessionsStore.remove(id);
-}
-async function renameSession(id, name) {
-  return sessionsStore.rename(id, name);
-}
-async function appendSessionMessage(sessionId, message) {
-  return sessionsStore.appendMessage(sessionId, message);
-}
-async function updateSession(sessionId, patch) {
-  return sessionsStore.update(sessionId, patch);
-}
+const normalizeSong = song => sanitizeTrack(song, { provider: DEFAULT_PROVIDER_ID });
 
-/* =====================================================
-   购物车操作
-   读改写都在会话仓储的锁内完成
-   ===================================================== */
-async function cartAdd(sessionId, songs) {
-  if (!Array.isArray(songs) || songs.length === 0) return null;
-  return sessionsStore.mutate(sessionId, target => {
-    target.cart = Array.isArray(target.cart) ? target.cart : [];
-    const existing = new Set(target.cart.map(s => s.id));
-    let added = 0;
-    for (const s of songs) {
-      if (existing.has(s.id)) continue;
-      target.cart.push(sanitizeSong(s));
-      existing.add(s.id);
-      added++;
-    }
-    return { added, total: target.cart.length };
-  });
-}
-async function cartRemove(sessionId, songIds) {
-  const removeSet = new Set(songIds);
-  return sessionsStore.mutate(sessionId, target => {
-    target.cart = (target.cart || []).filter(s => !removeSet.has(s.id));
-    return { total: target.cart.length };
-  });
-}
-async function cartReorder(sessionId, orderedIds) {
-  return sessionsStore.mutate(sessionId, target => {
-    const cartMap = new Map((target.cart || []).map(s => [s.id, s]));
-    const next = [];
-    for (const id of orderedIds) {
-      const item = cartMap.get(id);
-      if (item) { next.push(item); cartMap.delete(id); }
-    }
-    for (const item of cartMap.values()) next.push(item);
-    target.cart = next;
-    return { total: next.length };
-  });
-}
-async function cartClear(sessionId) {
-  return sessionsStore.mutate(sessionId, target => {
-    target.cart = [];
-    return { total: 0 };
-  });
-}
-async function cartSettle(sessionId) {
-  const target = await sessionsStore.get(sessionId);
-  if (!target) throw new Error('找不到会话');
-  const cart = Array.isArray(target.cart) ? target.cart : [];
-  if (cart.length === 0) throw new Error('会话歌单是空的');
-
-  let appliedEq = null;
-  if (target.cartEq) {
-    try {
-      const r = await sendToOffscreen('EQ_SET', { eq: target.cartEq });
-      if (r?.ok) appliedEq = r.eq || target.cartEq;
-    } catch {}
-  }
-
-  await pausePlatformPlayback();
-  await sendToOffscreen('PLAYER_SET_PLAYLIST', { songs: cart, autoPlay: true });
-
-  const result = {
-    playlist: cart.map(sanitizeSong),
-    eq: appliedEq || target.cartEq || null,
-    playlistSource: target.result?.playlistSource || null,
-    eqSource: target.result?.eqSource || null,
-    settledAt: Date.now(),
-  };
-  await sessionsStore.update(sessionId, { result, songCount: cart.length });
-  return { ok: true, count: cart.length, result };
-}
-async function restoreSession(id) {
-  const target = await sessionsStore.get(id);
-  if (!target) throw new Error('找不到会话');
-
-  const result = { eq: null, songCount: 0, messages: [] };
-  const snapshot = target.result;
-
-  if (snapshot) {
-    if (snapshot.eq) {
-      try {
-        const res = await sendToOffscreen('EQ_SET', { eq: snapshot.eq });
-        if (res?.ok) {
-          result.eq = res.eq || snapshot.eq;
-          result.messages.push('已应用调音快照');
-        }
-      } catch (e) {
-        result.messages.push('恢复调音失败：' + (e?.message || e));
-      }
-    }
-    if (Array.isArray(snapshot.playlist) && snapshot.playlist.length > 0) {
-      try {
-        await pausePlatformPlayback();
-        await sendToOffscreen('PLAYER_SET_PLAYLIST', { songs: snapshot.playlist, autoPlay: true });
-        result.songCount = snapshot.playlist.length;
-        result.messages.push(`已恢复 ${snapshot.playlist.length} 首歌`);
-      } catch (e) {
-        result.messages.push('恢复歌单失败：' + (e?.message || e));
-      }
-    }
-  } else {
-    if (target.eq) {
-      try {
-        const res = await sendToOffscreen('EQ_SET', { eq: target.eq });
-        if (res?.ok) result.eq = res.eq || target.eq;
-      } catch {}
-    }
-    if (Array.isArray(target.playlistSnapshot) && target.playlistSnapshot.length > 0) {
-      try {
-        await pausePlatformPlayback();
-        await sendToOffscreen('PLAYER_SET_PLAYLIST', { songs: target.playlistSnapshot, autoPlay: true });
-        result.songCount = target.playlistSnapshot.length;
-      } catch {}
-    }
-  }
-
-  await sessionsStore.setCurrent(id);
-  return result;
-}
+const sessions = createSessionService({ store: sessionsStore, player, normalizeSong });
+const playlists = createPlaylistService({ store: playlistsStore, player, normalizeSong });
+const eqPresets = createEqPresetService({ store: eqPresetsStore, player, normalizeEq });
 
 /* =====================================================
    LLM 配置 / Offscreen
@@ -311,55 +146,12 @@ async function sendToOffscreen(type, payload) {
 }
 
 /* =====================================================
-   意图状态（旧入口）
-   ===================================================== */
-async function getIntentState() {
-  const r = await chrome.storage.session.get(INTENT_STATE_KEY);
-  return r[INTENT_STATE_KEY] || null;
-}
-async function setIntentState(updater) {
-  const cur = await getIntentState();
-  const next = typeof updater === 'function' ? updater(cur) : { ...(cur || {}), ...updater };
-  await chrome.storage.session.set({ [INTENT_STATE_KEY]: next });
-  return next;
-}
-async function appendIntentLog(level, text) {
-  await setIntentState(cur => {
-    const s = cur || { status: 'idle', log: [] };
-    s.log = [...(s.log || []), { time: Date.now(), level, text }];
-    if (s.log.length > 200) s.log = s.log.slice(-200);
-    return s;
-  });
-}
-async function setIntentThinking(channel, text) {
-  await setIntentState(cur => ({ ...(cur || {}), thinking: { channel, text: text || '' } }));
-}
-async function appendIntentThinking(channel, chunk) {
-  await setIntentState(cur => {
-    const s = cur || {};
-    const prev = s.thinking || { channel, text: '' };
-    const text = (prev.channel === channel ? prev.text : '') + chunk;
-    s.thinking = { channel, text };
-    return s;
-  });
-}
-async function clearIntentThinking() {
-  await setIntentState(cur => ({ ...(cur || {}), thinking: null }));
-}
-
-/* =====================================================
    音乐平台适配层
    ===================================================== */
 function requireProvider() {
   const provider = musicProviders.primary;
   if (!provider) throw new Error('未注册音乐平台');
   return provider;
-}
-
-async function pausePlatformPlayback() {
-  try {
-    await requireProvider().pauseExternalPlayback();
-  } catch {}
 }
 
 async function fetchPlaylists() {
@@ -486,11 +278,7 @@ function makeStreamPusher(sessionId) {
     if (!buffer) return;
     const text = buffer;
     buffer = '';
-    chrome.runtime.sendMessage({
-      target: 'sidepanel',
-      type: 'CHAT_STREAM_CHUNK',
-      payload: { sessionId, delta: text },
-    }).catch(() => {});
+    forwardToSidepanel('CHAT_STREAM_CHUNK', { sessionId, delta: text });
   };
   return {
     push(chunk) {
@@ -576,13 +364,6 @@ async function executeMyPlaylistsQuery(q) {
     await new Promise(r => setTimeout(r, 200));
   }
   return collected;
-}
-function getQueryLabel(q) {
-  const tool = normalizeToolName(q.tool);
-  if (tool === 'searchTracks' || tool === 'searchPlaylists') return q.keyword || '';
-  if (tool === 'getArtistTracks') return q.artistName || '';
-  if (tool === 'myPlaylists') return q.playlistName ? `歌单名含「${q.playlistName}」` : '（我的全部歌单）';
-  return '';
 }
 async function executeOneQuery(q, provider = requireProvider()) {
   const tool = normalizeToolName(q.tool);
@@ -705,10 +486,7 @@ async function runIntentSearchForChat(userNeed, signal, sessionId, excludeIds, o
     if (plan.targetCount > INTENT_CONFIG.maxTargetCount) plan.targetCount = INTENT_CONFIG.maxTargetCount;
     if (plan.queries.length === 0) throw new Error('模型没有给出任何检索动作');
 
-    chrome.runtime.sendMessage({
-      target: 'sidepanel', type: 'CHAT_THINKING_END',
-      payload: { sessionId },
-    }).catch(() => {});
+    forwardToSidepanel('CHAT_THINKING_END', { sessionId });
 
     onProgress?.('execute', `执行 ${plan.queries.length} 个检索动作…`);
     const raw = [];
@@ -732,10 +510,7 @@ async function runIntentSearchForChat(userNeed, signal, sessionId, excludeIds, o
     if (deduped.length === 0) throw new Error('没有检索到任何新歌曲（会话歌单已包含候选）');
     const filtered = coarseFilter(deduped, plan.filters || {}, plan.targetCount);
 
-    chrome.runtime.sendMessage({
-      target: 'sidepanel', type: 'CHAT_THINKING_START',
-      payload: { sessionId, stage: 'rerank' },
-    }).catch(() => {});
+    forwardToSidepanel('CHAT_THINKING_START', { sessionId, stage: 'rerank' });
 
     const pusher2 = makeStreamPusher(sessionId);
     const forLLM = filtered.map(s => ({
@@ -784,7 +559,7 @@ async function runEqTuningForChat(userNeed, signal, sessionId, currentEq) {
       signal,
     });
     pusher.flush();
-    const applyR = await sendToOffscreen('EQ_SET', { eq });
+    const applyR = await player.setEq(eq);
     if (!applyR?.ok) throw new Error(applyR?.error || '应用 EQ 失败');
     return { ok: true, eq: applyR.eq || eq, reason };
   } catch (e) {
@@ -799,29 +574,26 @@ async function runEqTuningForChat(userNeed, signal, sessionId, currentEq) {
 async function runChatRequest({ userNeed, sessionId, userMessageId }) {
   let session = null;
   if (sessionId) {
-    const sessions = await getSessions();
-    session = sessions.find(s => s.id === sessionId) || null;
+    const list = await sessions.list();
+    session = list.find(s => s.id === sessionId) || null;
   }
-  if (!session) session = await getCurrentSession();
-  if (!session) session = await createSession(userNeed.slice(0, 20) || '新会话');
+  if (!session) session = await sessions.current();
+  if (!session) session = await sessions.create(userNeed.slice(0, 20) || '新会话');
 
   const abort = new AbortController();
-  currentIntentAbort = abort;
+  currentChatAbort = abort;
   const signal = abort.signal;
 
   const newMsgId = () => createId('msg');
 
   try {
-    await appendSessionMessage(session.id, {
+    await sessions.appendMessage(session.id, {
       id: userMessageId || newMsgId(),
       role: 'user', kind: 'text',
       text: userNeed, at: Date.now(),
     });
 
-    chrome.runtime.sendMessage({
-      target: 'sidepanel', type: 'CHAT_THINKING_START',
-      payload: { sessionId: session.id, stage: 'route' },
-    }).catch(() => {});
+    forwardToSidepanel('CHAT_THINKING_START', { sessionId: session.id, stage: 'route' });
 
     let route;
     try { route = await routeIntent(userNeed, signal); }
@@ -830,7 +602,7 @@ async function runChatRequest({ userNeed, sessionId, userMessageId }) {
     const mode = route.mode || 'search';
     const payload = route.payload || {};
 
-    await appendSessionMessage(session.id, {
+    await sessions.appendMessage(session.id, {
       id: newMsgId(), role: 'agent', kind: 'ack',
       text: route.reply || '收到', at: Date.now(), mode,
     });
@@ -838,22 +610,19 @@ async function runChatRequest({ userNeed, sessionId, userMessageId }) {
     // ---- eq ----
     if (mode === 'eq') {
       const eqPrompt = payload.eqPrompt || userNeed;
-      const sessionsFresh = await getSessions();
+      const sessionsFresh = await sessions.list();
       const freshSession = sessionsFresh.find(s => s.id === session.id) || session;
       const currentEq = freshSession.cartEq || freshSession.result?.eq || null;
       const result = await runEqTuningForChat(eqPrompt, signal, session.id, currentEq);
-      chrome.runtime.sendMessage({
-        target: 'sidepanel', type: 'CHAT_THINKING_END',
-        payload: { sessionId: session.id },
-      }).catch(() => {});
+      forwardToSidepanel('CHAT_THINKING_END', { sessionId: session.id });
       if (result.ok) {
-        await updateSession(session.id, { cartEq: result.eq });
-        await appendSessionMessage(session.id, {
+        await sessions.update(session.id, { cartEq: result.eq });
+        await sessions.appendMessage(session.id, {
           id: newMsgId(), role: 'agent', kind: 'eq-card',
           eq: result.eq, reason: result.reason, at: Date.now(),
         });
       } else {
-        await appendSessionMessage(session.id, {
+        await sessions.appendMessage(session.id, {
           id: newMsgId(), role: 'agent', kind: 'error',
           text: result.error, at: Date.now(),
         });
@@ -863,14 +632,11 @@ async function runChatRequest({ userNeed, sessionId, userMessageId }) {
 
     // ---- open-eq-panel ----
     if (mode === 'open-eq-panel') {
-      chrome.runtime.sendMessage({
-        target: 'sidepanel', type: 'CHAT_THINKING_END',
-        payload: { sessionId: session.id },
-      }).catch(() => {});
-      const sessionsFresh = await getSessions();
+      forwardToSidepanel('CHAT_THINKING_END', { sessionId: session.id });
+      const sessionsFresh = await sessions.list();
       const fresh = sessionsFresh.find(s => s.id === session.id) || session;
       const currentEq = fresh.cartEq || fresh.result?.eq || defaultEq();
-      await appendSessionMessage(session.id, {
+      await sessions.appendMessage(session.id, {
         id: newMsgId(), role: 'agent', kind: 'eq-card',
         eq: currentEq, reason: null, at: Date.now(),
       });
@@ -881,17 +647,17 @@ async function runChatRequest({ userNeed, sessionId, userMessageId }) {
     if (mode === 'save-eq') {
       const name = payload.name || `调音-${new Date().toLocaleDateString('zh-CN')}`;
       try {
-        const sessionsFresh = await getSessions();
+        const sessionsFresh = await sessions.list();
         const fresh = sessionsFresh.find(s => s.id === session.id);
         const eqToSave = fresh?.cartEq || fresh?.result?.eq;
         if (!eqToSave) throw new Error('当前会话还没有调音');
-        const saved = await saveEqPreset({ name, eq: eqToSave, source: 'manual' });
-        await appendSessionMessage(session.id, {
+        const saved = await eqPresets.save({ name, eq: eqToSave, source: 'manual' });
+        await sessions.appendMessage(session.id, {
           id: newMsgId(), role: 'agent', kind: 'save-card',
           cardType: 'eq', name: saved.name, at: Date.now(),
         });
       } catch (e) {
-        await appendSessionMessage(session.id, {
+        await sessions.appendMessage(session.id, {
           id: newMsgId(), role: 'agent', kind: 'error',
           text: '保存调音失败：' + (e?.message || e), at: Date.now(),
         });
@@ -903,20 +669,20 @@ async function runChatRequest({ userNeed, sessionId, userMessageId }) {
     if (mode === 'save-list') {
       const name = payload.name || `列表-${new Date().toLocaleDateString('zh-CN')}`;
       try {
-        const sessionsFresh = await getSessions();
+        const sessionsFresh = await sessions.list();
         const fresh = sessionsFresh.find(s => s.id === session.id);
         const songsToSave = (fresh?.cart && fresh.cart.length > 0)
           ? fresh.cart
           : (fresh?.result?.playlist || []);
         if (!songsToSave.length) throw new Error('会话歌单和结算歌单都是空的');
-        const saved = await savePlaylist({ name, songs: songsToSave, source: 'manual' });
-        await appendSessionMessage(session.id, {
+        const saved = await playlists.save({ name, songs: songsToSave, source: 'manual' });
+        await sessions.appendMessage(session.id, {
           id: newMsgId(), role: 'agent', kind: 'save-card',
           cardType: 'playlist', name: saved.name,
           count: saved.songs.length, at: Date.now(),
         });
       } catch (e) {
-        await appendSessionMessage(session.id, {
+        await sessions.appendMessage(session.id, {
           id: newMsgId(), role: 'agent', kind: 'error',
           text: '保存列表失败：' + (e?.message || e), at: Date.now(),
         });
@@ -926,11 +692,8 @@ async function runChatRequest({ userNeed, sessionId, userMessageId }) {
 
     // ---- chat ----
     if (mode === 'chat') {
-      chrome.runtime.sendMessage({
-        target: 'sidepanel', type: 'CHAT_THINKING_END',
-        payload: { sessionId: session.id },
-      }).catch(() => {});
-      await appendSessionMessage(session.id, {
+      forwardToSidepanel('CHAT_THINKING_END', { sessionId: session.id });
+      await sessions.appendMessage(session.id, {
         id: newMsgId(), role: 'agent', kind: 'text',
         text: '可以跟我说：想听什么场景的歌（"深夜写代码"）、想调整听感（"低频轻一点"）、或者"把当前列表保存成 XX"。',
         at: Date.now(),
@@ -939,7 +702,7 @@ async function runChatRequest({ userNeed, sessionId, userMessageId }) {
     }
 
     // ---- search（默认）----
-    const sessionsFresh = await getSessions();
+    const sessionsFresh = await sessions.list();
     const freshSession = sessionsFresh.find(s => s.id === session.id) || session;
     const excludeIds = (freshSession.cart || [])
       .flatMap(song => [song.id, trackKey(song)])
@@ -948,20 +711,14 @@ async function runChatRequest({ userNeed, sessionId, userMessageId }) {
     const searchResult = await runIntentSearchForChat(
       userNeed, signal, session.id, excludeIds,
       (stage, detail) => {
-        chrome.runtime.sendMessage({
-          target: 'sidepanel', type: 'CHAT_PROGRESS',
-          payload: { sessionId: session.id, stage, detail },
-        }).catch(() => {});
+        forwardToSidepanel('CHAT_PROGRESS', { sessionId: session.id, stage, detail });
       }
     );
 
-    chrome.runtime.sendMessage({
-      target: 'sidepanel', type: 'CHAT_THINKING_END',
-      payload: { sessionId: session.id },
-    }).catch(() => {});
+    forwardToSidepanel('CHAT_THINKING_END', { sessionId: session.id });
 
     if (searchResult.ok) {
-      await appendSessionMessage(session.id, {
+      await sessions.appendMessage(session.id, {
         id: newMsgId(), role: 'agent', kind: 'plan-card',
         picks: searchResult.picks,
         plan: searchResult.plan,
@@ -969,7 +726,7 @@ async function runChatRequest({ userNeed, sessionId, userMessageId }) {
         at: Date.now(),
       });
     } else {
-      await appendSessionMessage(session.id, {
+      await sessions.appendMessage(session.id, {
         id: newMsgId(), role: 'agent', kind: 'error',
         text: searchResult.error, at: Date.now(),
       });
@@ -978,512 +735,69 @@ async function runChatRequest({ userNeed, sessionId, userMessageId }) {
     if (signal.aborted) return;
     console.error('[chatStart] 失败：', e);
     try {
-      await appendSessionMessage(session.id, {
+      await sessions.appendMessage(session.id, {
         id: newMsgId(), role: 'agent', kind: 'error',
         text: e?.message || String(e), at: Date.now(),
       });
     } catch {}
   } finally {
-    if (currentIntentAbort === abort) currentIntentAbort = null;
+    if (currentChatAbort === abort) currentChatAbort = null;
   }
 }
 
-/* =====================================================
-   旧入口
-   ===================================================== */
-async function runIntentSearch(userNeed) {
-  await chrome.storage.session.set({
-    [INTENT_STATE_KEY]: { status: 'running', userNeed, startedAt: Date.now(), log: [], thinking: null, plan: null, picks: null, stats: null, error: null },
-  });
-  const abort = new AbortController();
-  currentIntentAbort = abort;
-  const signal = abort.signal;
-  try {
-    const result = await runIntentSearchForChat(userNeed, signal, null, [], null);
-    if (result.ok) {
-      await setIntentState({
-        status: 'done', finishedAt: Date.now(), plan: result.plan, picks: result.picks, stats: result.stats,
-      });
-    } else {
-      await setIntentState({ status: 'error', error: result.error, finishedAt: Date.now() });
-    }
-  } catch (e) {
-    await setIntentState({ status: 'error', error: e?.message || String(e), finishedAt: Date.now() });
-  } finally {
-    if (currentIntentAbort === abort) currentIntentAbort = null;
-  }
-}
-async function runEqTuning(userNeed) {
-  await chrome.storage.session.set({
-    [INTENT_STATE_KEY]: { status: 'running', mode: 'eq', userNeed, startedAt: Date.now(), log: [], thinking: null, eqResult: null, error: null },
-  });
-  const abort = new AbortController();
-  currentIntentAbort = abort;
-  const signal = abort.signal;
-  try {
-    let currentEq = null;
-    try { const r = await sendToOffscreen('EQ_GET'); if (r?.ok) currentEq = r.eq; } catch {}
-    const { eq, reason } = await tuneEqWithLLM({
-      userNeed, currentEq,
-      onChunk: (chunk) => { appendIntentThinking('eq', chunk).catch(() => {}); },
-      signal,
-    });
-    const applyR = await sendToOffscreen('EQ_SET', { eq });
-    if (!applyR?.ok) throw new Error(applyR?.error || '应用 EQ 失败');
-    await setIntentState({ status: 'done', mode: 'eq', finishedAt: Date.now(), eqResult: { eq: applyR.eq || eq, reason } });
-  } catch (e) {
-    await setIntentState({ status: 'error', mode: 'eq', error: e?.message || String(e), finishedAt: Date.now() });
-  } finally {
-    if (currentIntentAbort === abort) currentIntentAbort = null;
-  }
-}
 
 /* =====================================================
    消息路由
    ===================================================== */
-chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
+const abortChat = () => {
+  if (!currentChatAbort) return;
+  try { currentChatAbort.abort(); } catch {}
+};
 
-  /* ============ 文件系统：状态查询 ============ */
-  if (req?.action === 'fsGetStatus') {
-    (async () => {
-      try {
-        const status = await getFsStatus();
-        sendResponse({ ok: true, ...status, lastSyncAt: getLastSyncAt() });
-      } catch (e) {
-        sendResponse({ ok: false, error: e?.message || String(e) });
-      }
-    })();
-    return true;
-  }
+const startChat = (payload) => {
+  runChatRequest(payload).catch(e => console.warn('[chatStart] 未捕获失败：', e));
+};
 
-  /* ============ 文件系统：绑定文件夹（handle 已由 options 页存到 IndexedDB）============ */
-  if (req?.action === 'fsBindFolder') {
-    (async () => {
-      try {
-        const r = await onHandleSaved();
-        sendResponse(r);
-      } catch (e) {
-        sendResponse({ ok: false, reason: e?.message || String(e) });
-      }
-    })();
-    return true;
-  }
+const playerHandlers = createPlayerHandlers({ player, forwardToSidepanel });
 
-  /* ============ 文件系统：解绑 ============ */
-  if (req?.action === 'fsUnbindFolder') {
-    (async () => {
-      try {
-        const r = await unbindFolder();
-        sendResponse(r);
-      } catch (e) {
-        sendResponse({ ok: false, reason: e?.message || String(e) });
-      }
-    })();
-    return true;
-  }
+const routeMessage = createMessageRouter({
+  actions: {
+    ...createFsHandlers({
+      getStatus: getFsStatus,
+      getLastSyncAt,
+      bind: onHandleSaved,
+      unbind: unbindFolder,
+      syncNow: smartSync,
+      forcePush: pushToFolder,
+      pull: pullFromFolder,
+    }),
 
-  /* ============ 文件系统：智能同步（自动判断方向）============ */
-  if (req?.action === 'fsSyncNow') {
-    (async () => {
-      try {
-        const r = await smartSync();
-        sendResponse(r);
-      } catch (e) {
-        sendResponse({ ok: false, reason: e?.message || String(e) });
-      }
-    })();
-    return true;
-  }
+    ...createMusicHandlers({
+      fetchPlaylists,
+      searchSongs,
+      deepSearch: deepSearchViaPlaylists,
+      artistAllSongs: fetchArtistAllSongs,
+      pause: () => player.pauseExternal(),
+    }),
 
-  /* ============ 文件系统：强制上传（覆盖文件夹）============ */
-  if (req?.action === 'fsForcePush') {
-    (async () => {
-      try {
-        const r = await pushToFolder({ force: true, allowEmptyOverwrite: !!req.allowEmpty });
-        sendResponse(r);
-      } catch (e) {
-        sendResponse({ ok: false, reason: e?.message || String(e) });
-      }
-    })();
-    return true;
-  }
-
-  /* ============ 文件系统：从文件拉取 ============ */
-  if (req?.action === 'fsPullFromFolder') {
-    (async () => {
-      try {
-        const r = await pullFromFolder();
-        sendResponse(r);
-      } catch (e) {
-        sendResponse({ ok: false, reason: e?.message || String(e) });
-      }
-    })();
-    return true;
-  }
-
-  /* offscreen 持久化 */
-  if (req?.target === 'background' && req?.type === 'PERSIST_EQ') {
-    if (req.payload?.eq) chrome.storage.local.set({ currentEq: req.payload.eq }).catch(() => {});
-    sendResponse({ ok: true }); return true;
-  }
-  if (req?.target === 'background' && req?.type === 'PERSIST_VOLUME') {
-    const v = req.payload?.volume;
-    if (typeof v === 'number' && Number.isFinite(v)) chrome.storage.local.set({ playerVolume: v }).catch(() => {});
-    sendResponse({ ok: true }); return true;
-  }
-  if (req?.target === 'background' && req?.type === 'LOAD_PLAYER_STATE') {
-    (async () => {
-      try {
-        const r = await chrome.storage.local.get(['playerVolume', 'currentEq']);
-        sendResponse({
-          ok: true,
-          volume: typeof r.playerVolume === 'number' ? r.playerVolume : PLAYER_DEFAULTS.volume,
-          eq: r.currentEq || null,
-        });
-      } catch (e) { sendResponse({ ok: false, error: e?.message || String(e) }); }
-    })();
-    return true;
-  }
-  if (req?.target === 'background' && req?.type === 'PLAYER_RESOLVE_URL') {
-    (async () => {
-      try {
-        const song = req.payload?.song;
-        if (!song) throw new Error('缺少歌曲信息');
-        const provider = song.provider
-          ? musicProviders.get(song.provider)
-          : musicProviders.primary;
-        if (!provider) throw new Error(`未注册的音乐平台：${song.provider || 'unknown'}`);
-        const url = await provider.resolveStreamUrl(song);
-        sendResponse({ ok: true, url });
-      } catch (e) {
-        sendResponse({ ok: false, error: e?.message || String(e) });
-      }
-    })();
-    return true;
-  }
-  if (req?.target === 'background' && req?.type === 'PLAYER_STATE_CHANGED') {
-    chrome.runtime.sendMessage({
-      target: 'sidepanel', type: 'PLAYER_STATE_CHANGED', payload: req.payload,
-    }).catch(() => {});
-    sendResponse({ ok: true }); return true;
-  }
-  if (req?.target === 'background' && typeof req?.type === 'string' && req.type.startsWith('PLAYER_')) {
-    sendToOffscreen(req.type, req.payload || {})
-      .then(r => sendResponse(r || { ok: true }))
-      .catch(e => sendResponse({ ok: false, error: e?.message || String(e) }));
-    return true;
-  }
-
-  /* 音乐平台接口 */
-  if (req?.action === 'fetchPlaylists') {
-    fetchPlaylists().then(data => sendResponse({ ok: true, data }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'searchSongs') {
-    const keyword = String(req.keyword || '').trim();
-    if (!keyword) { sendResponse({ ok: false, error: '搜索词不能为空' }); return true; }
-    const limit = Number.isFinite(req.limit) ? req.limit : 30;
-    const offset = Number.isFinite(req.offset) ? req.offset : 0;
-    const order = req.order === 'time' ? 'time' : 'hot';
-    searchSongs(keyword, limit, offset, order)
-      .then(r => sendResponse({ ok: true, data: r.songs, songCount: r.songCount, keyword, order }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'deepSearch') {
-    const keyword = String(req.keyword || '').trim();
-    if (!keyword) { sendResponse({ ok: false, error: '搜索词不能为空' }); return true; }
-    const maxPlaylists = Number.isFinite(req.maxPlaylists) ? req.maxPlaylists : 10;
-    deepSearchViaPlaylists(keyword, { maxPlaylists })
-      .then(data => sendResponse({ ok: true, data }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'artistAllSongs') {
-    const name = String(req.artistName || '').trim();
-    if (!name) { sendResponse({ ok: false, error: '歌手名不能为空' }); return true; }
-    fetchArtistAllSongs(name)
-      .then(data => sendResponse({ ok: true, data }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-
-  /* 保存的播放列表 */
-  if (req?.action === 'listSavedPlaylists') {
-    getSavedPlaylists().then(list => sendResponse({ ok: true, playlists: list }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'saveCurrentPlaylist') {
-    (async () => {
-      try {
-        const session = await getCurrentSession();
-        const songsToSave = (session?.cart && session.cart.length > 0)
-          ? session.cart
-          : (session?.result?.playlist || []);
-        if (!songsToSave.length) {
-          const r = await sendToOffscreen('PLAYER_GET_STATE');
-          if (!r?.ok || !r.state?.playlist?.length) {
-            sendResponse({ ok: false, error: '没有可保存的歌曲' });
-            return;
-          }
-          const saved = await savePlaylist({ name: req.name || '未命名', songs: r.state.playlist, source: 'manual' });
-          sendResponse({ ok: true, playlist: saved });
-          return;
-        }
-        const saved = await savePlaylist({ name: req.name || '未命名', songs: songsToSave, source: 'manual' });
-        sendResponse({ ok: true, playlist: saved });
-      } catch (e) { sendResponse({ ok: false, error: e?.message || String(e) }); }
-    })();
-    return true;
-  }
-  if (req?.action === 'deleteSavedPlaylist') {
-    deletePlaylist(req.id).then(list => sendResponse({ ok: true, playlists: list }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'renameSavedPlaylist') {
-    renamePlaylist(req.id, req.name).then(list => sendResponse({ ok: true, playlists: list }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'playSavedPlaylist') {
-    playSavedPlaylist(req.id).then(playlist => sendResponse({ ok: true, playlist }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-
-  /* EQ 预设 */
-  if (req?.action === 'listEqPresets') {
-    getEqPresets().then(list => sendResponse({ ok: true, presets: list }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'saveEqPreset') {
-    (async () => {
-      try {
-        let eq = req.eq;
-        if (!eq) {
-          const r = await sendToOffscreen('EQ_GET');
-          if (!r?.ok || !r.eq) throw new Error('读不到当前 EQ');
-          eq = r.eq;
-        }
-        const saved = await saveEqPreset({ name: req.name || '未命名调音', eq, source: 'manual' });
-        sendResponse({ ok: true, preset: saved });
-      } catch (e) { sendResponse({ ok: false, error: e?.message || String(e) }); }
-    })();
-    return true;
-  }
-  if (req?.action === 'deleteEqPreset') {
-    deleteEqPreset(req.id).then(list => sendResponse({ ok: true, presets: list }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'renameEqPreset') {
-    renameEqPreset(req.id, req.name).then(list => sendResponse({ ok: true, presets: list }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'applyEqPreset') {
-    applyEqPreset(req.id).then(data => sendResponse({ ok: true, ...data }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-
-  /* EQ 直接操作 */
-  if (req?.action === 'getEqState') {
-    sendToOffscreen('EQ_GET').then(r => sendResponse(r || { ok: false }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'setEqDirect') {
-    sendToOffscreen('EQ_SET', { eq: req.eq }).then(r => sendResponse(r || { ok: true }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'resetEq') {
-    sendToOffscreen('EQ_RESET').then(r => sendResponse(r || { ok: true }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-
-  /* 旧入口 */
-  if (req?.action === 'eqTuneStart') {
-    const userNeed = String(req.userNeed || '').trim();
-    if (!userNeed) { sendResponse({ ok: false, error: '需求不能为空' }); return true; }
-    if (currentIntentAbort) { try { currentIntentAbort.abort(); } catch {} }
-    sendResponse({ ok: true }); runEqTuning(userNeed); return true;
-  }
-  if (req?.action === 'intentSearchStart') {
-    const userNeed = String(req.userNeed || '').trim();
-    if (!userNeed) { sendResponse({ ok: false, error: '需求不能为空' }); return true; }
-    if (currentIntentAbort) { try { currentIntentAbort.abort(); } catch {} }
-    sendResponse({ ok: true }); runIntentSearch(userNeed); return true;
-  }
-  if (req?.action === 'intentSearchAbort') {
-    if (currentIntentAbort) { try { currentIntentAbort.abort(); } catch {} }
-    sendResponse({ ok: true }); return true;
-  }
-  if (req?.action === 'intentSearchGetState') {
-    getIntentState().then(state => sendResponse({ ok: true, state }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'intentSearchClear') {
-    chrome.storage.session.remove(INTENT_STATE_KEY).then(() => sendResponse({ ok: true }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-
-  /* 对话入口 */
-  if (req?.action === 'chatStart') {
-    const userNeed = String(req.userNeed || '').trim();
-    if (!userNeed) { sendResponse({ ok: false, error: '内容为空' }); return true; }
-    if (currentIntentAbort) { try { currentIntentAbort.abort(); } catch {} }
-    sendResponse({ ok: true });
-    runChatRequest({ userNeed, sessionId: req.sessionId, userMessageId: req.userMessageId });
-    return true;
-  }
-  if (req?.action === 'chatAbort') {
-    if (currentIntentAbort) { try { currentIntentAbort.abort(); } catch {} }
-    getCurrentSession().then(session => {
-      chrome.runtime.sendMessage({
-        target: 'sidepanel',
-        type: 'CHAT_THINKING_END',
-        payload: { sessionId: session?.id, aborted: true },
-      }).catch(() => {});
-    }).catch(() => {});
-    sendResponse({ ok: true }); return true;
-  }
-
-  /* Session */
-  if (req?.action === 'listSessions') {
-    getSessions().then(sessions => sendResponse({ ok: true, sessions }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'getCurrentSession') {
-    getCurrentSession().then(session => sendResponse({ ok: true, session }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'createSession') {
-    createSession(req.name).then(session => sendResponse({ ok: true, session }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'switchSession') {
-    switchSession(req.id).then(session => sendResponse({ ok: true, session }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'deleteSession') {
-    deleteSession(req.id).then(sessions => sendResponse({ ok: true, sessions }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'renameSession') {
-    renameSession(req.id, req.name).then(session => sendResponse({ ok: true, session }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-
-  /* 购物车 */
-  if (req?.action === 'cartAdd') {
-    cartAdd(req.sessionId, req.songs).then(r => sendResponse({ ok: true, ...r }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'cartRemove') {
-    cartRemove(req.sessionId, req.songIds).then(r => sendResponse({ ok: true, ...r }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'cartReorder') {
-    cartReorder(req.sessionId, req.orderedIds).then(r => sendResponse({ ok: true, ...r }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'cartClear') {
-    cartClear(req.sessionId).then(r => sendResponse({ ok: true, ...r }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'cartSettle') {
-    cartSettle(req.sessionId).then(r => sendResponse({ ok: true, ...r }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'cartSetEq') {
-    updateSession(req.sessionId, { cartEq: req.eq || null })
-      .then(() => sendResponse({ ok: true }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'updateSessionResultSource') {
-    sessionsStore.mutate(req.sessionId, t => {
-      if (!t.result) throw new Error('会话或结果不存在');
-      if (req.playlistSource !== undefined) t.result.playlistSource = req.playlistSource;
-      if (req.eqSource !== undefined) t.result.eqSource = req.eqSource;
-    }, { notFoundMessage: '会话或结果不存在' })
-      .then(() => sendResponse({ ok: true }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'restoreSession') {
-    restoreSession(req.id).then(data => sendResponse({ ok: true, ...data }))
-      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
-    return true;
-  }
-  if (req?.action === 'openEqPanel') {
-    (async () => {
-      try {
-        let session = await getCurrentSession();
-        if (!session) session = await createSession('新会话');
-        const currentEq = session.cartEq || session.result?.eq || defaultEq();
-        const msgId = createId('msg');
-        await appendSessionMessage(session.id, {
-          id: msgId, role: 'agent', kind: 'eq-card',
-          eq: currentEq, reason: null, at: Date.now(),
-        });
-        sendResponse({ ok: true, messageId: msgId });
-      } catch (e) {
-        sendResponse({ ok: false, error: e?.message || String(e) });
-      }
-    })();
-    return true;
-  }
-
-  if (req?.action === 'pausePageAudio') {
-    (async () => { await pausePlatformPlayback(); sendResponse({ ok: true }); })();
-    return true;
-  }
+    ...createPlaylistHandlers({ playlists, sessions, player }),
+    ...createEqHandlers({ presets: eqPresets, player }),
+    ...createChatHandlers({
+      chat: { start: startChat, abort: abortChat },
+      sessions,
+      forwardToSidepanel,
+    }),
+    ...createSessionHandlers(sessions),
+  },
+  types: playerHandlers.types,
+  typePrefixes: [playerHandlers.prefix],
 });
+
+chrome.runtime.onMessage.addListener(routeMessage);
 
 /* =====================================================
-   监听 storage 变化 → 节流同步到文件
+   扩展事件
    ===================================================== */
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local') return;
-  const relevantKeys = ['savedPlaylists', 'eqPresets', 'chatSessions', 'currentSessionId'];
-  const hit = relevantKeys.some(k => k in changes);
-  if (!hit) return;
-  scheduleSyncToFolder();
+registerBackgroundEvents({
+  fs: { init: initFs, scheduleSync: scheduleSyncToFolder },
 });
-
-/* =====================================================
-   扩展启动
-   ===================================================== */
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
-  initFs().catch(e => console.warn('[fs-sync] onInstalled initFs 失败：', e));
-});
-chrome.runtime.onStartup.addListener(() => {
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
-  initFs().catch(e => console.warn('[fs-sync] onStartup initFs 失败：', e));
-});
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
-
-// service worker 每次被唤醒也尝试 initFs 一次（幂等）
-initFs().catch(e => console.warn('[fs-sync] initFs 失败：', e));

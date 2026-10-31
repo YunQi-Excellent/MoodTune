@@ -1,9 +1,9 @@
 import { SESSION_CONFIG } from '../../core/constants.js';
 import { createId } from '../../core/ids.js';
 import { storageQueue } from './storage-queue.js';
+import { CURRENT_SESSION_KEY, SESSIONS_KEY } from './keys.js';
 
-export const SESSIONS_KEY = 'chatSessions';
-export const CURRENT_SESSION_KEY = 'currentSessionId';
+export { CURRENT_SESSION_KEY, SESSIONS_KEY };
 
 const NAME_LIMIT = 40;
 const DEFAULT_SESSION_NAME = '新会话';
