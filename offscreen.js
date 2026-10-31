@@ -166,6 +166,16 @@ function getEffects() {
   return state.effects ? { ...state.effects } : defaultEffects();
 }
 
+/** 自检信息：用来确认效果链真的建起来了，而不是只有 UI 状态变了。 */
+function effectsDebug() {
+  return {
+    graph: Boolean(graph),
+    context: audioCtx?.state || 'none',
+    blocks: graph ? Object.keys(graph.blocks) : [],
+    limiter: Boolean(graph?.limiter)
+  };
+}
+
 /* =====================================================
    Wire
    ===================================================== */
@@ -395,7 +405,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'EFFECTS_SET':
       try {
         setEffects(msg.payload?.effects);
-        sendResponse({ ok: true, effects: getEffects() });
+        sendResponse({ ok: true, effects: getEffects(), debug: effectsDebug() });
       } catch (e) {
         console.error('[Offscreen] EFFECTS_SET 失败：', e);
         sendResponse({ ok: false, error: e?.message || String(e) });
@@ -403,7 +413,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
 
     case 'EFFECTS_GET':
-      sendResponse({ ok: true, effects: getEffects() });
+      sendResponse({ ok: true, effects: getEffects(), debug: effectsDebug() });
       break;
 
     case 'EFFECTS_RESET':
