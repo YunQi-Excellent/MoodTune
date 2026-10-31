@@ -14,8 +14,16 @@ import {
 } from './fs-manager.js';
 import { storageQueue } from './src/app/storage/storage-queue.js';
 
-const APP_VERSION = '2.4.1';
 const FILE_VERSION = 1;
+
+/** 版本号只从 manifest 读，避免和 manifest.json / package.json 漂移。 */
+function getAppVersion() {
+  try {
+    return chrome.runtime.getManifest().version;
+  } catch {
+    return 'unknown';
+  }
+}
 
 const KEYS = {
   playlists: 'savedPlaylists',
@@ -258,7 +266,7 @@ export async function pushToFolder(opts = {}) {
     // 4) .meta.json
     await writeJson(handle, '.meta.json', {
       version: FILE_VERSION,
-      appVersion: APP_VERSION,
+      appVersion: getAppVersion(),
       lastSyncAt: Date.now(),
       sessionCount: sessions.length,
       playlistCount: playlists.length,

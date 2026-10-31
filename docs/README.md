@@ -264,16 +264,24 @@ Agent 有 4 个可用工具：
 
 ```text
 moodtune/
-├── manifest.json              # 扩展清单
-├── background.js              # Service Worker（业务逻辑）
-├── sidepanel.html / .js       # 侧边栏
-├── offscreen.html / .js       # 音频引擎
-├── options.html / .js         # 设置页
-├── src/agent/                 # 提示词、LLM 客户端、检索与对话编排
+├── manifest.json              # 扩展清单（MV3）
+├── background.js              # Service Worker：装配依赖 + 注册消息路由
+├── sidepanel.html / .js / .css
+├── offscreen.html / .js       # 音频引擎（<audio> + Web Audio EQ）
+├── options.html / .js / .css  # 设置页
 ├── fs-manager.js              # File System Access API 封装
 ├── fs-sync.js                 # 本地文件夹双向同步
-└── docs/
-    └── index.html             # GitHub Pages 宣传页
+├── src/
+│   ├── core/                  # 常量与纯函数（EQ / Track / JSON / 队列）
+│   ├── providers/             # 平台适配，netease/ 为内置实现
+│   ├── agent/                 # 提示词、LLM、检索计划、对话编排
+│   └── app/
+│       ├── storage/           # 仓储与串行写入队列
+│       ├── services/          # 会话、歌单、播放器、偏好、检索服务
+│       ├── background/        # 消息路由、处理器、扩展事件
+│       └── sidepanel/         # 格式化、卡片渲染、播放栏
+├── tests/                     # Vitest
+└── docs/                      # 文档与 GitHub Pages
 ```
 
 ### 修改提示词
@@ -286,6 +294,12 @@ moodtune/
 - `EQ_TUNER_SYSTEM` —— EQ 调音
 
 改完提示词保存 → `chrome://extensions` 刷新扩展即可生效，不用重新构建。
+
+### 架构与贡献
+
+- [架构说明](ARCHITECTURE.md) —— 分层、四个运行时上下文、数据流、不可破坏的约束
+- [平台适配](PROVIDERS.md) —— provider 契约、能力模型、新增平台步骤
+- [贡献指南](../CONTRIBUTING.md) —— 开发约定、测试要求、手动冒烟清单
 
 ### 调试
 
