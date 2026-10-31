@@ -83,6 +83,49 @@ describe('BUILTIN_SOUND_PRESETS', () => {
   });
 });
 
+describe('空间与动态类的处理组合', () => {
+  const byId = id => BUILTIN_SOUND_PRESETS.find(preset => preset.id === id);
+
+  it('前置听感靠串音 + 轻微混响，不做加宽', () => {
+    const front = byId('front');
+    expect(front.effects.crossfeed.enabled).toBe(true);
+    expect(front.effects.crossfeed.amount).toBeGreaterThan(0);
+    expect(front.effects.reverb.enabled).toBe(true);
+    expect(front.effects.width.enabled).toBe(false);
+  });
+
+  it('宽阔环绕同时开加宽、早期反射与混响', () => {
+    const wide = byId('wide');
+    expect(wide.effects.width.enabled).toBe(true);
+    expect(wide.effects.width.amount).toBeGreaterThan(1);
+    expect(wide.effects.spatial.enabled).toBe(true);
+    expect(wide.effects.reverb.enabled).toBe(true);
+    expect(wide.effects.reverb.wet).toBeGreaterThan(0);
+  });
+
+  it('现场感与沉浸声场都带混响尾巴', () => {
+    for (const id of ['live', 'immersive']) {
+      const preset = byId(id);
+      expect(preset.effects.reverb.enabled, id).toBe(true);
+      expect(preset.effects.reverb.durationMs, id).toBeGreaterThan(800);
+    }
+  });
+
+  it('混响湿声不会盖过干声', () => {
+    for (const preset of BUILTIN_SOUND_PRESETS) {
+      if (!preset.effects.reverb.enabled) continue;
+      expect(preset.effects.reverb.wet, preset.id).toBeGreaterThan(0);
+      expect(preset.effects.reverb.wet, preset.id).toBeLessThanOrEqual(0.5);
+    }
+  });
+
+  it('空间类预设都出现在卡片 chips 里（前两个）', () => {
+    const ids = featuredSoundPresets().map(preset => preset.id);
+    expect(ids).toContain('front');
+    expect(ids).toContain('wide');
+  });
+});
+
 describe('分组与卡片露出', () => {
   it('每个预设都落在已声明的分组里，分组覆盖全部预设', () => {
     for (const preset of BUILTIN_SOUND_PRESETS) {

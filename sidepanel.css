@@ -1240,6 +1240,21 @@ html.dark .sound-state { color: var(--brand-400); }
 .sound-card[data-accent="amber"] { --sound-accent: #f59e0b; }
 .sound-card[data-accent="teal"] { --sound-accent: #14b8a6; }
 .sound-card[data-accent="rose"] { --sound-accent: #fb7185; }
+.sound-card[data-accent="fuchsia"] { --sound-accent: #d946ef; }
+.sound-card[data-accent="indigo"] { --sound-accent: #818cf8; }
+.sound-card[data-accent="emerald"] { --sound-accent: #34d399; }
+.sound-card[data-accent="orange"] { --sound-accent: #fb923c; }
+.sound-card[data-accent="pink"] { --sound-accent: #f472b6; }
+
+/* 音效库的分组小标题 */
+.sound-group { margin-bottom: 14px; }
+.sound-group-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--fg-2);
+  letter-spacing: 0.02em;
+  margin: 0 0 8px 2px;
+}
 
 .backdrop {
   position: absolute; inset: 0;

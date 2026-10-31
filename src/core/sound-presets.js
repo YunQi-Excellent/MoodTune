@@ -127,6 +127,77 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
       },
     }),
   },
+  {
+    id: 'front',
+    name: '前置听感',
+    tagline: '声像从脑中挪到额前，久听不累',
+    accent: 'indigo',
+    group: '空间与动态',
+    featured: true,
+    // 串音把对侧信号低通后混回来，是「在前方」的关键；EQ 只负责提亮
+    eq: makeEq([-3, -2, -1, 0, 0, 1, 2, 2, 0, -1], -2),
+    effects: makeEffects({
+      crossfeed: { enabled: true, amount: 0.55, cutoffHz: 700, delayMs: 0.3 },
+      reverb: {
+        enabled: true, wet: 0.1, durationMs: 900, decay: 3.2, preDelayMs: 8,
+      },
+    }),
+  },
+  {
+    id: 'wide',
+    name: '宽阔环绕',
+    tagline: '声场拉开，两侧有反射',
+    accent: 'emerald',
+    group: '空间与动态',
+    featured: true,
+    eq: makeEq([1, 1, 0, 0, 0, 0, 1, 1, 1, 0], -2),
+    effects: makeEffects({
+      width: { enabled: true, amount: 1.55 },
+      spatial: { enabled: true, amount: 0.55 },
+      reverb: {
+        enabled: true, wet: 0.22, durationMs: 2000, decay: 2.4, preDelayMs: 20,
+      },
+    }),
+  },
+  {
+    id: 'live',
+    name: '现场感',
+    tagline: '像在小型现场，尾巴更自然',
+    accent: 'orange',
+    group: '空间与动态',
+    featured: false,
+    eq: makeEq([0, 1, 0, -1, 0, 1, 1, 0, 0, 0], -1),
+    effects: makeEffects({
+      width: { enabled: true, amount: 1.15 },
+      spatial: { enabled: true, amount: 0.4 },
+      reverb: {
+        enabled: true, wet: 0.3, durationMs: 2400, decay: 2.2, preDelayMs: 28,
+      },
+      dynamics: {
+        enabled: true, thresholdDb: -20, ratio: 3, makeupDb: 1.5, drive: 0,
+      },
+    }),
+  },
+  {
+    id: 'immersive',
+    name: '沉浸声场',
+    tagline: '包围感强，适合戴耳机听整张专辑',
+    accent: 'pink',
+    group: '空间与动态',
+    featured: false,
+    eq: makeEq([1, 1, 0, 0, 0, 0, 0, 1, 1, 0], -3),
+    effects: makeEffects({
+      width: { enabled: true, amount: 1.3 },
+      crossfeed: { enabled: true, amount: 0.35, cutoffHz: 800, delayMs: 0.25 },
+      spatial: { enabled: true, amount: 0.7 },
+      reverb: {
+        enabled: true, wet: 0.18, durationMs: 1400, decay: 2.8, preDelayMs: 15,
+      },
+      dynamics: {
+        enabled: true, thresholdDb: -22, ratio: 2.5, makeupDb: 1, drive: 0,
+      },
+    }),
+  },
 ]);
 
 /**
