@@ -16,7 +16,8 @@ import {
 import { defaultEq, normalizeEq } from './src/core/eq.js';
 import { createId } from './src/core/ids.js';
 import { extractJson } from './src/core/json.js';
-import { sanitizeTrack } from './src/core/track.js';
+import { sanitizeTrack, trackKey } from './src/core/track.js';
+import { getDefaultProvider } from './src/providers/index.js';
 
 import {
   getFsStatus,
@@ -447,277 +448,73 @@ async function clearIntentThinking() {
 }
 
 /* =====================================================
-   网易云：账号 / 搜索 / 歌单 / 歌手
+   音乐平台适配层
    ===================================================== */
-async function fetchPlaylists() {
-  const accRes = await fetch('https://music.163.com/api/nuser/account/get', { credentials: 'include' });
-  if (!accRes.ok) throw new Error(`账号接口 HTTP ${accRes.status}`);
-  const acc = await accRes.json();
-  const uid = acc?.profile?.userId || acc?.account?.id;
-  if (!uid) throw new Error('未拿到用户 ID —— 通常是未登录');
+function requireProvider() {
+  const provider = getDefaultProvider();
+  if (!provider) throw new Error('未注册音乐平台');
+  return provider;
+}
 
-  const plRes = await fetch(
-    `https://music.163.com/api/user/playlist?uid=${uid}&limit=1000&offset=0`,
-    { credentials: 'include' }
-  );
-  if (!plRes.ok) throw new Error(`歌单接口 HTTP ${plRes.status}`);
-  const pl = await plRes.json();
-  const list = pl?.playlist || [];
-  return {
-    user: { uid, nickname: acc?.profile?.nickname || '' },
-    playlists: list.map(p => ({
-      id: p.id, name: p.name, trackCount: p.trackCount,
-      privacy: p.privacy, creator: p.creator?.nickname || '',
-      creatorId: p.creator?.userId,
-      isOwn: p.creator?.userId === uid,
-      link: `https://music.163.com/#/playlist?id=${p.id}`,
-    })),
-  };
+async function fetchPlaylists() {
+  return requireProvider().getUserPlaylists({ limit: 1000 });
 }
-async function searchViaCloudSearch(keyword, limit, offset, order = 'hot') {
-  const url = new URL('https://music.163.com/api/cloudsearch/get/web');
-  url.searchParams.set('s', keyword);
-  url.searchParams.set('type', '1');
-  url.searchParams.set('limit', String(limit));
-  url.searchParams.set('offset', String(offset));
-  if (order) url.searchParams.set('order', order);
-  const res = await fetch(url.toString(), { credentials: 'include' });
-  if (!res.ok) throw new Error(`cloudsearch HTTP ${res.status}`);
-  const data = await res.json();
-  if (data.code !== 200) throw new Error(`cloudsearch code=${data.code}`);
-  const songs = data?.result?.songs || [];
-  const songCount = data?.result?.songCount || 0;
-  const out = songs.map(s => ({
-    id: s.id, name: s.name,
-    artists: (s.ar || []).map(a => a.name).join(' / '),
-    album: s.al?.name || '',
-    durationMs: s.dt || 0,
-    cover: s.al?.picUrl || '',
-    link: `https://music.163.com/#/song?id=${s.id}`,
-  }));
-  return { songs: out, songCount };
-}
-async function searchViaSearchGet(keyword, limit, offset) {
-  const url = new URL('https://music.163.com/api/search/get/web');
-  url.searchParams.set('s', keyword);
-  url.searchParams.set('type', '1');
-  url.searchParams.set('limit', String(limit));
-  url.searchParams.set('offset', String(offset));
-  const res = await fetch(url.toString(), { credentials: 'include' });
-  if (!res.ok) throw new Error(`search/get HTTP ${res.status}`);
-  const data = await res.json();
-  if (data.code !== 200) throw new Error(`search/get code=${data.code}`);
-  const songs = data?.result?.songs || [];
-  const songCount = data?.result?.songCount || 0;
-  const out = songs.map(s => ({
-    id: s.id, name: s.name,
-    artists: (s.artists || []).map(a => a.name).join(' / '),
-    album: s.album?.name || '',
-    durationMs: s.duration || 0,
-    cover: s.album?.picUrl || '',
-    link: `https://music.163.com/#/song?id=${s.id}`,
-  }));
-  return { songs: out, songCount };
-}
+
 async function searchSongs(keyword, limit = 30, offset = 0, order = 'hot') {
-  try { return await searchViaCloudSearch(keyword, limit, offset, order); }
-  catch (e) { return await searchViaSearchGet(keyword, limit, offset); }
+  const result = await requireProvider().searchTracks({ keyword, limit, offset, order });
+  return { songs: result.tracks, songCount: result.total };
 }
-async function searchPlaylists(keyword, limit = 10) {
-  const url = `https://music.163.com/api/search/get/web?s=${encodeURIComponent(keyword)}&type=1000&limit=${limit}&offset=0`;
-  const res = await fetch(url, { credentials: 'include' });
-  if (!res.ok) throw new Error(`搜歌单 HTTP ${res.status}`);
-  const data = await res.json();
-  if (data.code !== 200) throw new Error(`搜歌单 code=${data.code}`);
-  return data.result?.playlists || [];
-}
-async function fetchPlaylistAllTracks(playlistId, maxTracks = 2000) {
-  const detailRes = await fetch(
-    `https://music.163.com/api/v6/playlist/detail?id=${playlistId}&n=1000&s=8`,
-    { credentials: 'include' }
-  );
-  if (!detailRes.ok) throw new Error(`歌单详情 HTTP ${detailRes.status}`);
-  const detailData = await detailRes.json();
-  if (detailData.code !== 200) throw new Error(`歌单详情 code=${detailData.code}`);
-  const trackIds = detailData.playlist?.trackIds || [];
-  if (trackIds.length === 0) throw new Error('歌单 trackIds 为空');
-  const ids = trackIds.map(t => t.id).slice(0, maxTracks);
-  const songs = [];
-  const batchSize = 100;
-  for (let i = 0; i < ids.length; i += batchSize) {
-    const batch = ids.slice(i, i + batchSize);
-    const idsParam = JSON.stringify(batch.map(id => ({ id })));
-    const res = await fetch(
-      `https://music.163.com/api/v3/song/detail?c=${encodeURIComponent(idsParam)}`,
-      { credentials: 'include' }
-    );
-    if (!res.ok) throw new Error(`歌曲详情 HTTP ${res.status}`);
-    const data = await res.json();
-    if (data.code !== 200) throw new Error(`歌曲详情 code=${data.code}`);
-    songs.push(...(data.songs || []));
-    await new Promise(r => setTimeout(r, 200));
-  }
-  return songs;
-}
+
 async function deepSearchViaPlaylists(keyword, opts = {}) {
   const maxPlaylists = opts.maxPlaylists ?? 10;
   const maxTracksPerPlaylist = opts.maxTracksPerPlaylist ?? 1000;
-  const playlists = await searchPlaylists(keyword, maxPlaylists);
+  const provider = requireProvider();
+  const playlists = await provider.searchPlaylists({ keyword, limit: maxPlaylists });
   if (playlists.length === 0) throw new Error(`没有找到与「${keyword}」相关的歌单`);
+
   const seen = new Set();
-  const allSongs = [];
+  const songs = [];
   const playlistStats = [];
-  for (const p of playlists) {
+
+  for (const playlist of playlists) {
     try {
-      const tracks = await fetchPlaylistAllTracks(p.id, maxTracksPerPlaylist);
+      const tracks = await provider.getPlaylistTracks(playlist.id, {
+        maxTracks: maxTracksPerPlaylist,
+      });
       let added = 0;
-      for (const t of tracks) {
-        if (seen.has(t.id)) continue;
-        seen.add(t.id);
-        allSongs.push({
-          id: t.id, name: t.name,
-          artists: (t.ar || t.artists || []).map(x => x.name).join(' / '),
-          album: t.al?.name || t.album?.name || '',
-          durationMs: t.dt || t.duration || 0,
-          cover: t.al?.picUrl || t.album?.picUrl || '',
-          link: `https://music.163.com/#/song?id=${t.id}`,
-        });
+      for (const track of tracks) {
+        const key = trackKey(track) || track.id;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        songs.push({ ...track, sourceWeight: 2 });
         added++;
       }
-      playlistStats.push({ id: p.id, name: p.name, trackCount: tracks.length, added });
-    } catch (e) {
-      playlistStats.push({ id: p.id, name: p.name, error: e?.message || String(e) });
+      playlistStats.push({
+        id: playlist.id,
+        name: playlist.name,
+        trackCount: tracks.length,
+        added,
+      });
+    } catch (error) {
+      playlistStats.push({
+        id: playlist.id,
+        name: playlist.name,
+        error: error?.message || String(error),
+      });
     }
     await new Promise(r => setTimeout(r, 300));
   }
-  return { playlistsFound: playlists.length, playlistStats, songs: allSongs };
+  return { playlistsFound: playlists.length, playlistStats, songs };
 }
-async function findArtistByName(name) {
-  const url = new URL('https://music.163.com/api/search/get/web');
-  url.searchParams.set('s', name);
-  url.searchParams.set('type', '100');
-  url.searchParams.set('limit', '10');
-  url.searchParams.set('offset', '0');
-  const res = await fetch(url.toString(), { credentials: 'include' });
-  if (!res.ok) throw new Error(`搜索歌手 HTTP ${res.status}`);
-  const data = await res.json();
-  if (data.code !== 200) throw new Error(`搜索歌手 code=${data.code}`);
-  const artists = data?.result?.artists || [];
-  if (artists.length === 0) throw new Error(`没有找到歌手「${name}」`);
-  const exact = artists.find(a => a.name === name);
-  return exact || artists[0];
-}
-async function fetchAlbumsViaArtistApi(artistId) {
-  const albums = [];
-  const seen = new Set();
-  let offset = 0;
-  const limit = 100;
-  for (let page = 0; page < 20; page++) {
-    const url = `https://music.163.com/api/artist/albums/${artistId}?offset=${offset}&limit=${limit}`;
-    const res = await fetch(url, { credentials: 'include' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (data.code !== 200) throw new Error(`code=${data.code}`);
-    const batch = data.hotAlbums || data.albums || (Array.isArray(data) ? data : []);
-    if (batch.length === 0) break;
-    for (const a of batch) {
-      if (seen.has(a.id)) continue;
-      seen.add(a.id);
-      albums.push(a);
-    }
-    if (batch.length < limit) break;
-    offset += limit;
-    await new Promise(r => setTimeout(r, 300));
-  }
-  return albums;
-}
-async function fetchAlbumsViaSearch(artistName, artistId) {
-  const albums = [];
-  const seen = new Set();
-  let offset = 0;
-  const limit = 100;
-  for (let page = 0; page < 20; page++) {
-    const url = `https://music.163.com/api/search/get/web?s=${encodeURIComponent(artistName)}&type=10&limit=${limit}&offset=${offset}`;
-    const res = await fetch(url, { credentials: 'include' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (data.code !== 200) throw new Error(`code=${data.code}`);
-    const batch = data.result?.albums || [];
-    if (batch.length === 0) break;
-    let added = 0;
-    for (const a of batch) {
-      if (seen.has(a.id)) continue;
-      if (a.artist && a.artist.id !== undefined && a.artist.id !== artistId) continue;
-      seen.add(a.id);
-      albums.push(a);
-      added++;
-    }
-    if (batch.length < limit) break;
-    if (added === 0) break;
-    offset += limit;
-    await new Promise(r => setTimeout(r, 300));
-  }
-  return albums;
-}
-async function fetchArtistAlbums(artistId, artistName) {
-  let albums = [];
-  try { albums = await fetchAlbumsViaArtistApi(artistId); } catch {}
-  if (albums.length === 0 && artistName) {
-    try { albums = await fetchAlbumsViaSearch(artistName, artistId); } catch {}
-  }
-  return albums;
-}
-async function fetchAlbumSongs(albumId) {
-  const paths = [
-    `/api/v1/album/${albumId}`,
-    `/api/album/${albumId}`,
-    `/api/v1/album/${albumId}?ext=true`,
-  ];
-  let lastErr = null;
-  for (const path of paths) {
-    try {
-      const res = await fetch(`https://music.163.com${path}`, { credentials: 'include' });
-      if (!res.ok) { lastErr = new Error(`HTTP ${res.status}`); continue; }
-      const data = await res.json();
-      if (data.code !== 200) { lastErr = new Error(`code=${data.code}`); continue; }
-      const songs = data.songs || data.album?.songs || [];
-      if (songs.length === 0) { lastErr = new Error('0 songs'); continue; }
-      return { album: data.album || {}, songs, via: path };
-    } catch (e) { lastErr = e; }
-  }
-  throw new Error(`专辑接口失败：${lastErr?.message || 'unknown'}`);
-}
+
 async function fetchArtistAllSongs(artistName) {
-  const artist = await findArtistByName(artistName);
-  const albums = await fetchArtistAlbums(artist.id, artist.name);
-  const seen = new Set();
-  const allSongs = [];
-  const failedAlbums = [];
-  const successPaths = {};
-  for (const a of albums) {
-    try {
-      const { album, songs, via } = await fetchAlbumSongs(a.id);
-      successPaths[via] = (successPaths[via] || 0) + 1;
-      for (const s of songs) {
-        if (seen.has(s.id)) continue;
-        seen.add(s.id);
-        allSongs.push({
-          id: s.id, name: s.name,
-          artists: (s.ar || s.artists || []).map(x => x.name).join(' / '),
-          album: album.name || a.name,
-          durationMs: s.dt || s.duration || 0,
-          cover: album.picUrl || a.picUrl || '',
-          link: `https://music.163.com/#/song?id=${s.id}`,
-        });
-      }
-    } catch (e) {
-      failedAlbums.push({ id: a.id, name: a.name, error: e?.message || String(e) });
-    }
-    await new Promise(r => setTimeout(r, 200));
-  }
+  const result = await requireProvider().getArtistTracks(artistName);
   return {
-    artist: { id: artist.id, name: artist.name, picUrl: artist.picUrl || '', albumCount: artist.albumSize ?? albums.length },
-    albumsFound: albums.length, failedAlbums, successPaths, songs: allSongs,
+    artist: result.artist,
+    albumsFound: result.albumsFound,
+    failedAlbums: result.failedAlbums,
+    successPaths: result.successPaths,
+    songs: result.tracks,
   };
 }
 
@@ -822,10 +619,17 @@ async function tuneEqWithLLM({ userNeed, currentEq, onChunk, signal }) {
 /* =====================================================
    工具执行
    ===================================================== */
+function normalizeToolName(tool) {
+  if (tool === 'searchSongs') return 'searchTracks';
+  if (tool === 'fetchArtistAllSongs') return 'getArtistTracks';
+  return tool;
+}
+
 async function executeMyPlaylistsQuery(q) {
-  const plData = await fetchPlaylists();
+  const provider = requireProvider();
+  const plData = await provider.getUserPlaylists({ limit: 1000 });
   const allPlaylists = plData.playlists || [];
-  if (allPlaylists.length === 0) throw new Error('你的网易云账号下没有任何歌单');
+  if (allPlaylists.length === 0) throw new Error('你的音乐账号下没有任何歌单');
   const keyword = String(q.playlistName || '').trim();
   let targets;
   if (!keyword) targets = allPlaylists;
@@ -855,20 +659,12 @@ async function executeMyPlaylistsQuery(q) {
   const collected = [];
   for (const p of picked) {
     try {
-      const tracks = await fetchPlaylistAllTracks(p.id, maxTracks);
-      for (const t of tracks) {
-        if (seen.has(t.id)) continue;
-        seen.add(t.id);
-        collected.push({
-          id: t.id, name: t.name,
-          artists: (t.ar || t.artists || []).map(x => x.name).join(' / '),
-          album: t.al?.name || t.album?.name || '',
-          durationMs: t.dt || t.duration || 0,
-          cover: t.al?.picUrl || t.album?.picUrl || '',
-          link: `https://music.163.com/#/song?id=${t.id}`,
-          sourceWeight: 4,
-          fromPlaylist: p.name,
-        });
+      const tracks = await provider.getPlaylistTracks(p.id, { maxTracks });
+      for (const track of tracks) {
+        const key = trackKey(track) || track.id;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        collected.push({ ...track, sourceWeight: 4, fromPlaylist: p.name });
       }
     } catch (e) { console.warn(`[意图搜索] 挖用户歌单 ${p.id} 失败：${e?.message || e}`); }
     await new Promise(r => setTimeout(r, 200));
@@ -876,57 +672,64 @@ async function executeMyPlaylistsQuery(q) {
   return collected;
 }
 function getQueryLabel(q) {
-  if (q.tool === 'searchSongs' || q.tool === 'searchPlaylists') return q.keyword || '';
-  if (q.tool === 'fetchArtistAllSongs') return q.artistName || '';
-  if (q.tool === 'myPlaylists') return q.playlistName ? `歌单名含「${q.playlistName}」` : '（我的全部歌单）';
+  const tool = normalizeToolName(q.tool);
+  if (tool === 'searchTracks' || tool === 'searchPlaylists') return q.keyword || '';
+  if (tool === 'getArtistTracks') return q.artistName || '';
+  if (tool === 'myPlaylists') return q.playlistName ? `歌单名含「${q.playlistName}」` : '（我的全部歌单）';
   return '';
 }
-async function executeOneQuery(q) {
-  if (q.tool === 'searchSongs') {
+async function executeOneQuery(q, provider = requireProvider()) {
+  const tool = normalizeToolName(q.tool);
+
+  if (tool === 'searchTracks') {
     const limit = Math.min(Math.max(Number(q.limit) || 50, 1), 100);
-    const r = await searchSongs(String(q.keyword || ''), limit, 0, 'hot');
-    return r.songs.map(s => ({ ...s, sourceWeight: 3 }));
+    const result = await provider.searchTracks({
+      keyword: String(q.keyword || ''),
+      limit,
+      offset: 0,
+      order: 'hot',
+    });
+    return result.tracks.map(track => ({ ...track, sourceWeight: 3 }));
   }
-  if (q.tool === 'searchPlaylists') {
+
+  if (tool === 'searchPlaylists') {
     const limit = Math.min(Math.max(Number(q.limit) || 5, 1), 20);
     const maxTracks = Math.min(Math.max(Number(q.maxTracksPerPlaylist) || 200, 1), 500);
-    const playlists = await searchPlaylists(String(q.keyword || ''), limit);
+    const playlists = await provider.searchPlaylists({
+      keyword: String(q.keyword || ''),
+      limit,
+    });
     const collected = [];
     for (const p of playlists) {
       try {
-        const tracks = await fetchPlaylistAllTracks(p.id, maxTracks);
-        for (const t of tracks) {
-          collected.push({
-            id: t.id, name: t.name,
-            artists: (t.ar || t.artists || []).map(x => x.name).join(' / '),
-            album: t.al?.name || t.album?.name || '',
-            durationMs: t.dt || t.duration || 0,
-            cover: t.al?.picUrl || t.album?.picUrl || '',
-            link: `https://music.163.com/#/song?id=${t.id}`,
-            sourceWeight: 2,
-          });
+        const tracks = await provider.getPlaylistTracks(p.id, { maxTracks });
+        for (const track of tracks) {
+          collected.push({ ...track, sourceWeight: 2 });
         }
       } catch (e) { console.warn(`[意图搜索] 挖歌单 ${p.id} 失败：${e?.message || e}`); }
       await new Promise(r => setTimeout(r, 200));
     }
     return collected;
   }
-  if (q.tool === 'fetchArtistAllSongs') {
+
+  if (tool === 'getArtistTracks') {
     const artistName = String(q.artistName || '').trim();
     if (!artistName) return [];
-    const r = await fetchArtistAllSongs(artistName);
-    return r.songs.map(s => ({ ...s, sourceWeight: 1 }));
+    const result = await provider.getArtistTracks(artistName);
+    return result.tracks.map(track => ({ ...track, sourceWeight: 1 }));
   }
-  if (q.tool === 'myPlaylists') return await executeMyPlaylistsQuery(q);
+
+  if (tool === 'myPlaylists') return executeMyPlaylistsQuery(q);
   throw new Error(`未知工具：${q.tool}`);
 }
 function dedupByWeight(candidates) {
-  const byId = new Map();
-  for (const s of candidates) {
-    const old = byId.get(s.id);
-    if (!old || (s.sourceWeight || 0) > (old.sourceWeight || 0)) byId.set(s.id, s);
+  const byKey = new Map();
+  for (const song of candidates) {
+    const key = trackKey(song) || song.id;
+    const old = byKey.get(key);
+    if (!old || (song.sourceWeight || 0) > (old.sourceWeight || 0)) byKey.set(key, song);
   }
-  return [...byId.values()];
+  return [...byKey.values()];
 }
 function coarseFilter(candidates, filters, targetCount) {
   let out = candidates;
@@ -976,11 +779,14 @@ async function routeIntent(userNeed, signal) {
 async function runIntentSearchForChat(userNeed, signal, sessionId, excludeIds, onProgress) {
   const pusher = makeStreamPusher(sessionId);
   try {
+    const provider = requireProvider();
+    const providerContext = `当前平台：${provider.label}；可用检索能力：${provider.capabilities.search.join(' / ')}。`;
+
     onProgress?.('plan', '正在规划检索方案…');
     const planRaw = await callLLMStream(
       [
         { role: 'system', content: PLANNER_SYSTEM },
-        { role: 'user', content: `用户需求：${userNeed}\n\n请先分析，然后输出检索计划。` },
+        { role: 'user', content: `${providerContext}\n用户需求：${userNeed}\n\n请先分析，然后输出检索计划。` },
       ],
       (chunk) => pusher.push(chunk),
       signal
@@ -1003,15 +809,18 @@ async function runIntentSearchForChat(userNeed, signal, sessionId, excludeIds, o
     for (const q of plan.queries) {
       if (signal.aborted) throw new Error('已中止');
       try {
-        const result = await executeOneQuery(q);
+        const result = await executeOneQuery(q, provider);
         raw.push(...result);
       } catch (e) { console.warn('[chat] 检索失败：', e?.message); }
     }
     let deduped = dedupByWeight(raw);
 
     if (Array.isArray(excludeIds) && excludeIds.length > 0) {
-      const excludeSet = new Set(excludeIds);
-      deduped = deduped.filter(s => !excludeSet.has(s.id));
+      const excludeSet = new Set(excludeIds.map(id => String(id)));
+      deduped = deduped.filter(song => (
+        !excludeSet.has(String(song.id))
+        && !excludeSet.has(trackKey(song))
+      ));
     }
 
     if (deduped.length === 0) throw new Error('没有检索到任何新歌曲（会话歌单已包含候选）');
@@ -1039,17 +848,17 @@ async function runIntentSearchForChat(userNeed, signal, sessionId, excludeIds, o
     const rerankResult = extractJson(rerankRaw);
     if (!rerankResult || !Array.isArray(rerankResult.picks)) throw new Error('模型没有给出有效的 picks');
 
-    const validIds = new Set(filtered.map(s => s.id));
+    const validIds = new Set(filtered.map(song => String(song.id)));
     const seen = new Set();
     const cleanPicks = [];
     for (const p of rerankResult.picks) {
-      const id = typeof p?.id === 'number' ? p.id : Number(p?.id);
-      if (!Number.isFinite(id) || !validIds.has(id) || seen.has(id)) continue;
+      const id = String(p?.id ?? '');
+      if (!id || !validIds.has(id) || seen.has(id)) continue;
       seen.add(id);
       cleanPicks.push({ id, reason: String(p.reason || '').slice(0, INTENT_CONFIG.rerankReasonMaxLen) });
       if (cleanPicks.length >= plan.targetCount) break;
     }
-    const byId = new Map(filtered.map(s => [s.id, s]));
+    const byId = new Map(filtered.map(song => [String(song.id), song]));
     const picks = cleanPicks.map(p => ({ ...byId.get(p.id), reason: p.reason }));
     return {
       ok: true, plan, picks,
@@ -1226,7 +1035,9 @@ async function runChatRequest({ userNeed, sessionId, userMessageId }) {
     // ---- search（默认）----
     const sessionsFresh = await getSessions();
     const freshSession = sessionsFresh.find(s => s.id === session.id) || session;
-    const excludeIds = (freshSession.cart || []).map(s => s.id);
+    const excludeIds = (freshSession.cart || [])
+      .flatMap(song => [song.id, trackKey(song)])
+      .filter(id => id !== undefined && id !== null && id !== '');
 
     const searchResult = await runIntentSearchForChat(
       userNeed, signal, session.id, excludeIds,
@@ -1457,7 +1268,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true;
   }
 
-  /* 网易云接口 */
+  /* 音乐平台接口 */
   if (req?.action === 'fetchPlaylists') {
     fetchPlaylists().then(data => sendResponse({ ok: true, data }))
       .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
