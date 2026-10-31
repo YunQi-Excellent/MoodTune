@@ -43,10 +43,26 @@ export function trackKey(track) {
 }
 
 /**
+ * 跨平台歌曲模型。
+ * @typedef {Object} Track
+ * @property {number|string|undefined} id
+ * @property {string} provider
+ * @property {string} providerId
+ * @property {string} key
+ * @property {string} name
+ * @property {string} artists
+ * @property {string[]} artistList
+ * @property {string} album
+ * @property {number} durationMs
+ * @property {string} cover
+ * @property {string} link
+ */
+
+/**
  * 归一化歌曲对象。保留旧字段（id/name/artists/...），追加 provider 维度。
  * @param {object} track
  * @param {{provider?: string}} [options]
- * @returns {object}
+ * @returns {Track}
  */
 export function sanitizeTrack(track, { provider = DEFAULT_PROVIDER_ID } = {}) {
   const source = track && typeof track === 'object' ? track : {};
