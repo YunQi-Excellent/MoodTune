@@ -18,6 +18,11 @@ export function createPlayerHandlers({ player, forwardToSidepanel }) {
         return { ok: true };
       },
 
+      PERSIST_EFFECTS: (req) => {
+        player.saveEffects(req.payload?.effects);
+        return { ok: true };
+      },
+
       PERSIST_VOLUME: (req) => {
         player.saveVolume(req.payload?.volume);
         return { ok: true };

@@ -19,7 +19,12 @@ function setup(overrides = {}) {
     get: id => (id === 'other' ? other : null),
   };
   const send = vi.fn(async (type, payload) => ({ ok: true, type, payload }));
-  const prefs = { saveEq: vi.fn(), saveVolume: vi.fn(), load: vi.fn(async () => ({ volume: 0.5, eq: { bands: [] } })) };
+  const prefs = {
+    saveEq: vi.fn(),
+    saveEffects: vi.fn(),
+    saveVolume: vi.fn(),
+    load: vi.fn(async () => ({ volume: 0.5, eq: { bands: [] }, effects: { enabled: true } })),
+  };
 
   const service = createPlayerService({
     send,
@@ -80,21 +85,26 @@ describe('createPlayerService 偏好', () => {
       ok: true,
       volume: 0.5,
       eq: { bands: [] },
+      effects: { enabled: true },
     });
   });
 
   it('没有保存过时回落到默认音量', async () => {
     const { service, prefs } = setup();
-    prefs.load.mockResolvedValueOnce({ volume: undefined, eq: null });
+    prefs.load.mockResolvedValueOnce({ volume: undefined, eq: null, effects: null });
 
-    await expect(service.loadPrefs()).resolves.toEqual({ ok: true, volume: 0.8, eq: null });
+    await expect(service.loadPrefs()).resolves.toEqual({
+      ok: true, volume: 0.8, eq: null, effects: null,
+    });
   });
 
-  it('saveEq / saveVolume 委托给偏好仓储', () => {
+  it('saveEq / saveEffects / saveVolume 委托给偏好仓储', () => {
     const { service, prefs } = setup();
     service.saveEq({ bands: [1] });
+    service.saveEffects({ enabled: true });
     service.saveVolume(0.3);
     expect(prefs.saveEq).toHaveBeenCalledWith({ bands: [1] });
+    expect(prefs.saveEffects).toHaveBeenCalledWith({ enabled: true });
     expect(prefs.saveVolume).toHaveBeenCalledWith(0.3);
   });
 });
@@ -102,7 +112,7 @@ describe('createPlayerService 偏好', () => {
 describe('createPlayerPreferences', () => {
   it('读取不到时返回默认值', async () => {
     const prefs = createPlayerPreferences({ area: createMemoryArea() });
-    await expect(prefs.load()).resolves.toEqual({ volume: 0.8, eq: null });
+    await expect(prefs.load()).resolves.toEqual({ volume: 0.8, eq: null, effects: null });
   });
 
   it('写入并读回音量与 EQ', async () => {
@@ -111,9 +121,14 @@ describe('createPlayerPreferences', () => {
 
     prefs.saveVolume(0.42);
     prefs.saveEq({ bands: [1, 2] });
+    prefs.saveEffects({ enabled: true, width: { enabled: true } });
     await new Promise(resolve => setTimeout(resolve, 0));
 
-    await expect(prefs.load()).resolves.toEqual({ volume: 0.42, eq: { bands: [1, 2] } });
+    await expect(prefs.load()).resolves.toEqual({
+      volume: 0.42,
+      eq: { bands: [1, 2] },
+      effects: { enabled: true, width: { enabled: true } },
+    });
   });
 
   it('忽略非法音量与非空 EQ', async () => {
@@ -122,6 +137,7 @@ describe('createPlayerPreferences', () => {
 
     prefs.saveVolume(Number.NaN);
     prefs.saveEq(null);
+    prefs.saveEffects(null);
     await new Promise(resolve => setTimeout(resolve, 0));
 
     expect(area.snapshot()).toEqual({});

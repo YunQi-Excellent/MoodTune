@@ -32,6 +32,11 @@ export function createPlayerService({ send, providers, prefs, defaults = PLAYER_
     setEq: eq => call('EQ_SET', { eq }),
     resetEq: () => call('EQ_RESET'),
 
+    /* ---- 效果链（宽度/串音/早期反射/混响/动态） ---- */
+    getEffects: () => call('EFFECTS_GET'),
+    setEffects: effects => call('EFFECTS_SET', { effects }),
+    resetEffects: () => call('EFFECTS_RESET'),
+
     /** 直接转发给 offscreen（PLAYER_* 通配入口）。 */
     dispatch: (type, payload) => call(type, payload),
 
@@ -54,6 +59,10 @@ export function createPlayerService({ send, providers, prefs, defaults = PLAYER_
       prefs?.saveEq(eq);
     },
 
+    saveEffects(effects) {
+      prefs?.saveEffects(effects);
+    },
+
     saveVolume(volume) {
       prefs?.saveVolume(volume);
     },
@@ -64,6 +73,7 @@ export function createPlayerService({ send, providers, prefs, defaults = PLAYER_
         ok: true,
         volume: typeof saved?.volume === 'number' ? saved.volume : defaults.volume,
         eq: saved?.eq || null,
+        effects: saved?.effects || null,
       };
     },
   };

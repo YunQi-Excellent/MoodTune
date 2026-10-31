@@ -95,8 +95,9 @@ describe('player handlers', () => {
   function setup(overrides = {}) {
     const player = {
       saveEq: vi.fn(),
+      saveEffects: vi.fn(),
       saveVolume: vi.fn(),
-      loadPrefs: vi.fn(async () => ({ ok: true, volume: 0.5, eq: null })),
+      loadPrefs: vi.fn(async () => ({ ok: true, volume: 0.5, eq: null, effects: null })),
       resolveStreamUrl: vi.fn(async () => 'https://a/1.mp3'),
       dispatch: vi.fn(async () => ({ ok: true })),
       ...overrides,
@@ -105,12 +106,14 @@ describe('player handlers', () => {
     return { player, forward, handlers: createPlayerHandlers({ player, forwardToSidepanel: forward }) };
   }
 
-  it('PERSIST_EQ / PERSIST_VOLUME 只做持久化', () => {
+  it('PERSIST_EQ / PERSIST_EFFECTS / PERSIST_VOLUME 只做持久化', () => {
     const { handlers, player } = setup();
 
     expect(handlers.types.PERSIST_EQ({ payload: { eq: { bands: [] } } })).toEqual({ ok: true });
+    expect(handlers.types.PERSIST_EFFECTS({ payload: { effects: { enabled: true } } })).toEqual({ ok: true });
     expect(handlers.types.PERSIST_VOLUME({ payload: { volume: 0.3 } })).toEqual({ ok: true });
     expect(player.saveEq).toHaveBeenCalledWith({ bands: [] });
+    expect(player.saveEffects).toHaveBeenCalledWith({ enabled: true });
     expect(player.saveVolume).toHaveBeenCalledWith(0.3);
   });
 
@@ -239,6 +242,9 @@ describe('eq handlers', () => {
       getEq: vi.fn(async () => ({ ok: true, eq: { bands: [1] } })),
       setEq: vi.fn(async eq => ({ ok: true, eq })),
       resetEq: vi.fn(async () => ({ ok: true })),
+      getEffects: vi.fn(async () => ({ ok: true, effects: { enabled: true } })),
+      setEffects: vi.fn(async effects => ({ ok: true, effects })),
+      resetEffects: vi.fn(async () => ({ ok: true })),
     };
     return { presets, player, handlers: createEqHandlers({ presets, player }) };
   }
@@ -275,6 +281,18 @@ describe('eq handlers', () => {
 
     await expect(handlers.setEqDirect({ eq: null })).resolves.toEqual({ ok: true });
     await expect(handlers.resetEq({})).resolves.toEqual({ ok: true });
+  });
+
+  it('效果链直连走同一个 player 通道', async () => {
+    const { handlers, player } = setup();
+
+    await expect(handlers.getEffectsState({})).resolves.toEqual({ ok: true, effects: { enabled: true } });
+    await expect(handlers.setEffectsDirect({ effects: { enabled: false } })).resolves.toEqual({
+      ok: true, effects: { enabled: false },
+    });
+    await expect(handlers.resetEffects({})).resolves.toEqual({ ok: true });
+    expect(player.setEffects).toHaveBeenCalledWith({ enabled: false });
+    expect(player.resetEffects).toHaveBeenCalled();
   });
 });
 

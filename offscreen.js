@@ -2,9 +2,11 @@
 // 同时承载 Web Audio EQ 处理
 // 注意：不直接访问 chrome.storage（某些环境不可用），持久化通过 background 中继
 
-import { DEFAULT_PROVIDER_ID, EQ_FREQUENCIES, PLAYER_DEFAULTS } from './src/core/constants.js';
-import { dbToGain, defaultEq, isEqValid, normalizeEq } from './src/core/eq.js';
+import { DEFAULT_PROVIDER_ID, PLAYER_DEFAULTS } from './src/core/constants.js';
+import { defaultEq, isEqValid, normalizeEq } from './src/core/eq.js';
+import { defaultEffects, isEffectsValid, normalizeEffects } from './src/core/effects.js';
 import { trackKey } from './src/core/track.js';
+import { createAudioGraph } from './src/app/audio/graph.js';
 
 const audioEl = document.getElementById('offscreenAudio');
 
@@ -20,15 +22,15 @@ const state = {
   duration: 0,
   volume: PLAYER_DEFAULTS.volume,
   loading: false,
-  eq: null
+  eq: null,
+  effects: null
 };
 
 // 音频图
 let audioCtx = null;
-let sourceNode = null;
-let preampNode = null;
-let filterNodes = [];
+let graph = null;
 let pendingEq = null; // 音频图建立前的缓存
+let pendingEffects = null;
 
 /* =====================================================
    与 background 通信的辅助
@@ -60,6 +62,10 @@ async function sendToBackground(type, payload) {
       state.eq = normalizeEq(r.eq);
       pendingEq = state.eq;
     }
+    if (r.effects && isEffectsValid(r.effects)) {
+      state.effects = normalizeEffects(r.effects);
+      pendingEffects = state.effects;
+    }
   }
 })();
 
@@ -67,17 +73,18 @@ async function sendToBackground(type, payload) {
    音频图
    ===================================================== */
 async function ensureAudioGraph() {
-  if (audioCtx) return;
+  if (graph) return;
 
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) {
-      console.warn('[Offscreen] 浏览器不支持 AudioContext，跳过 EQ');
+      console.warn('[Offscreen] 浏览器不支持 AudioContext，跳过 EQ 与效果链');
       return;
     }
 
     audioCtx = new Ctx();
 
+    let sourceNode = null;
     try {
       sourceNode = audioCtx.createMediaElementSource(audioEl);
     } catch (e) {
@@ -86,30 +93,19 @@ async function ensureAudioGraph() {
       return;
     }
 
-    preampNode = audioCtx.createGain();
-    preampNode.gain.value = 1;
-
-    filterNodes = EQ_FREQUENCIES.map(freq => {
-      const f = audioCtx.createBiquadFilter();
-      f.type = 'peaking';
-      f.frequency.value = freq;
-      f.Q.value = 1;
-      f.gain.value = 0;
-      return f;
+    graph = createAudioGraph({
+      ctx: audioCtx,
+      source: sourceNode,
+      destination: audioCtx.destination
     });
 
-    let node = sourceNode;
-    node.connect(preampNode);
-    node = preampNode;
-    for (const filter of filterNodes) {
-      node.connect(filter);
-      node = filter;
-    }
-    node.connect(audioCtx.destination);
-
     if (pendingEq) {
-      applyEqToNodes(pendingEq);
+      graph.applyEq(pendingEq);
       pendingEq = null;
+    }
+    if (pendingEffects) {
+      graph.applyEffects(pendingEffects);
+      pendingEffects = null;
     }
 
     if (audioCtx.state === 'suspended') {
@@ -119,34 +115,32 @@ async function ensureAudioGraph() {
     }
   } catch (e) {
     console.warn('[Offscreen] 初始化音频图失败：', e);
+    graph = null;
     audioCtx = null;
   }
 }
 
-function applyEqToNodes(eq) {
-  if (!preampNode || filterNodes.length === 0) return;
-  const enabled = eq.enabled !== false;
-
-  const preampGain = enabled ? dbToGain(eq.preampDb || 0) : 1;
-  preampNode.gain.value = preampGain;
-
-  for (let i = 0; i < filterNodes.length; i++) {
-    const freq = EQ_FREQUENCIES[i];
-    const band = (eq.bands || []).find(b => Number(b.frequencyHz) === freq);
-    const gain = enabled && band ? Number(band.gainDb) || 0 : 0;
-    filterNodes[i].gain.value = gain;
+/** 降级：音频图没建起来时退回元素默认输出（可播但没有 EQ/效果）。 */
+function applyEqToGraph(eq) {
+  if (graph) {
+    graph.applyEq(eq);
+    return;
   }
+  pendingEq = eq;
+}
+
+function applyEffectsToGraph(effects) {
+  if (graph) {
+    graph.applyEffects(effects);
+    return;
+  }
+  pendingEffects = effects;
 }
 
 function setEq(eq) {
   const normalized = normalizeEq(eq);
   state.eq = normalized;
-
-  if (audioCtx) {
-    applyEqToNodes(normalized);
-  } else {
-    pendingEq = normalized;
-  }
+  applyEqToGraph(normalized);
 
   // 通过 background 持久化（offscreen 不直接访问 chrome.storage）
   sendToBackground('PERSIST_EQ', { eq: normalized }).catch(() => {});
@@ -156,6 +150,20 @@ function setEq(eq) {
 
 function getEq() {
   return state.eq ? { ...state.eq } : defaultEq();
+}
+
+function setEffects(effects) {
+  const normalized = normalizeEffects(effects);
+  state.effects = normalized;
+  applyEffectsToGraph(normalized);
+
+  sendToBackground('PERSIST_EFFECTS', { effects: normalized }).catch(() => {});
+
+  broadcastState();
+}
+
+function getEffects() {
+  return state.effects ? { ...state.effects } : defaultEffects();
 }
 
 /* =====================================================
@@ -189,7 +197,8 @@ function toWire() {
     duration: state.duration,
     volume: state.volume,
     loading: state.loading,
-    eq: state.eq ? { ...state.eq } : defaultEq()
+    eq: state.eq ? { ...state.eq } : defaultEq(),
+    effects: state.effects ? { ...state.effects } : defaultEffects()
   };
 }
 
@@ -378,6 +387,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         setEq(defaultEq());
         sendResponse({ ok: true, eq: getEq() });
+      } catch (e) {
+        sendResponse({ ok: false, error: e?.message || String(e) });
+      }
+      break;
+
+    case 'EFFECTS_SET':
+      try {
+        setEffects(msg.payload?.effects);
+        sendResponse({ ok: true, effects: getEffects() });
+      } catch (e) {
+        console.error('[Offscreen] EFFECTS_SET 失败：', e);
+        sendResponse({ ok: false, error: e?.message || String(e) });
+      }
+      break;
+
+    case 'EFFECTS_GET':
+      sendResponse({ ok: true, effects: getEffects() });
+      break;
+
+    case 'EFFECTS_RESET':
+      try {
+        setEffects(defaultEffects());
+        sendResponse({ ok: true, effects: getEffects() });
       } catch (e) {
         sendResponse({ ok: false, error: e?.message || String(e) });
       }
