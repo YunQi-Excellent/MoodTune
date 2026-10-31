@@ -509,13 +509,15 @@ function renderLibraryBody() {
     }
     body.innerHTML = state.eqPresets.map(p => {
       const bandCount = (p.eq?.bands || []).filter(b => Math.abs(Number(b.gainDb)) > 0.01).length;
+      const chainCount = describeEffects(p.effects).length;
+      const chainHint = chainCount > 0 ? ' · 含效果链' : '';
       const srcLabel = p.source === 'llm' ? 'AI 调音' : '手动保存';
       return `
         <div class="lib-item" data-id="${p.id}">
           <div class="row">
             <div class="name">${escapeHtml(p.name)}</div>
           </div>
-          <div class="meta">${bandCount} 段调整 · 前级 ${p.eq?.preampDb || 0}dB · ${escapeHtml(srcLabel)} · ${escapeHtml(fmtDate(p.createdAt))}</div>
+          <div class="meta">${bandCount} 段调整 · 前级 ${p.eq?.preampDb || 0}dB${chainHint} · ${escapeHtml(srcLabel)} · ${escapeHtml(fmtDate(p.createdAt))}</div>
           <div class="actions">
             <button data-act="apply" data-id="${p.id}" class="primary">应用到当前</button>
             <button data-act="rename" data-id="${p.id}">改名</button>
@@ -951,7 +953,13 @@ $('#chatStream').addEventListener('click', async e => {
     if (name === null) return;
     const finalName = name.trim() || `调音-${new Date().toLocaleDateString('zh-CN')}`;
     try {
-      const r = await sendMsg({ action: 'saveEqPreset', name: finalName, eq });
+      // 连效果链一起存：只存 EQ 的话，套用时空间处理会丢
+      const r = await sendMsg({
+        action: 'saveEqPreset',
+        name: finalName,
+        eq,
+        effects: msg.effects || state.currentEffects,
+      });
       if (!r?.ok) throw new Error(r?.error || '保存失败');
       pushLog('ok', `已保存调音「${finalName}」`);
     } catch (err) {
