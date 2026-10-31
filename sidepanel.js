@@ -418,8 +418,10 @@ function closeLibraryDrawer() {
 }
 $('#closeLibraryDrawer').addEventListener('click', closeLibraryDrawer);
 
-$$('.lib-tab').forEach(tab => {   tab.addEventListener('click', () => {     state.libraryTab = tab.getAttribute('data-lib');     $$
-('.lib-tab').forEach(t => t.classList.toggle('active', t === tab));
+$$('.lib-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    state.libraryTab = tab.getAttribute('data-lib');
+    $$('.lib-tab').forEach(t => t.classList.toggle('active', t === tab));
     renderLibraryBody();
   });
 });

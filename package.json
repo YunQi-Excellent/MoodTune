@@ -1,0 +1,24 @@
+{
+  "name": "moodtune",
+  "version": "2.4.0",
+  "private": true,
+  "description": "对话式 AI 音乐助手（Chrome 扩展）",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run lint && npm run test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.14.0",
+    "globals": "^17.13.0",
+    "vitest": "^5.0.5"
+  }
+}
