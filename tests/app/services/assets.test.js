@@ -36,11 +36,15 @@ function setupEqPresets() {
     now: () => NOW,
     newId: prefix => `${prefix}-${++seq}`,
   });
-  const player = { setEq: vi.fn(async eq => ({ ok: true, eq })) };
+  const player = {
+    setEq: vi.fn(async eq => ({ ok: true, eq })),
+    setEffects: vi.fn(async effects => ({ ok: true, effects })),
+  };
   const service = createEqPresetService({
     store,
     player,
     normalizeEq: eq => ({ ...eq, normalized: true }),
+    normalizeEffects: effects => ({ ...effects, normalized: true }),
   });
   return { store, player, service };
 }
@@ -83,6 +87,28 @@ describe('createEqPresetService', () => {
     const saved = await service.save({ name: '低音', eq });
 
     expect(saved.eq).toEqual({ ...eq, normalized: true });
+  });
+
+  it('可以同时保存效果链，套用时一起生效', async () => {
+    const { service, player } = setupEqPresets();
+    const eq = { preampDb: 0, bands: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] };
+    const saved = await service.save({ name: '环绕', eq, effects: { enabled: true } });
+
+    expect(saved.effects).toEqual({ enabled: true, normalized: true });
+
+    const result = await service.apply(saved.id);
+    expect(player.setEffects).toHaveBeenCalledWith({ enabled: true, normalized: true });
+    expect(result.effects).toEqual({ enabled: true, normalized: true });
+  });
+
+  it('老预设只有 EQ 时不碰效果链', async () => {
+    const { service, player } = setupEqPresets();
+    const saved = await service.save({ name: '旧', eq: { preampDb: 0, bands: [] } });
+
+    const result = await service.apply(saved.id);
+
+    expect(player.setEffects).not.toHaveBeenCalled();
+    expect(result.effects).toBeUndefined();
   });
 
   it('apply 套用预设并回传应用后的 EQ', async () => {

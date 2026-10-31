@@ -1,4 +1,5 @@
 import { EQ_FREQUENCIES } from '../../core/constants.js';
+import { BUILTIN_SOUND_PRESETS, soundSignature } from '../../core/sound-presets.js';
 import { escapeHtml, fmtDuration } from './format.js';
 
 /**
@@ -106,13 +107,26 @@ export function renderEqCard(message) {
     `;
   }).join('');
 
+  // 音效 chips：先挑一套预设，下面的滑杆立刻变成那套值，再手动微调
+  const cardSignature = soundSignature({ eq, effects: message.effects });
+  const chipsHtml = BUILTIN_SOUND_PRESETS.map((preset) => {
+    const active = soundSignature({ eq: preset.eq, effects: preset.effects }) === cardSignature;
+    return `<button class="sound-chip${active ? ' active' : ''}" data-action="apply-sound-chip"
+              data-sound-id="${escapeHtml(preset.id)}" data-msg-id="${message.id}"
+              title="${escapeHtml(preset.tagline || '')}">${escapeHtml(preset.name)}</button>`;
+  }).join('');
+
   return `
     <div class="eq-header">
       <div class="title">
         <span>🎛 声学 EQ 调校</span>
       </div>
-      <span class="badge yellow">${preamp > 0 ? '+' : ''}${preamp} dB 前级</span>
+      <div class="eq-header-right">
+        <button class="eq-link" data-action="open-sound-library" data-msg-id="${message.id}">音效库 ›</button>
+        <span class="badge yellow">${preamp > 0 ? '+' : ''}${preamp} dB 前级</span>
+      </div>
     </div>
+    <div class="sound-chips">${chipsHtml}</div>
     ${reason ? `<div class="stats-line yellow">💡 ${escapeHtml(reason)}</div>` : ''}
     <div style="margin: 8px 0 10px;">
       ${preampHtml}

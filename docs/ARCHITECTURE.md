@@ -12,8 +12,9 @@ MoodTune 是一个**零构建**的 Chrome Manifest V3 扩展：没有打包步�
 | services | `src/app/services/` | 业务动作：结算、恢复、保存、播放控制 | 通过注入的 `send`/`player` 间接用宿主能力 |
 | storage | `src/app/storage/` | 持久化与并发串行化 | `area` 注入，不直接读全局 `chrome` |
 | background | `src/app/background/` | 消息路由、处理器、扩展事件、宿主适配器 | 不写业务规则 |
+| audio | `src/app/audio/` | Web Audio 效果链（EQ + 宽度/串音/早期反射/混响/动态） | 只做节点与参数，不 import `chrome`，不做业务判断 |
 | sidepanel | `src/app/sidepanel/` | DOM 渲染、交互、播放栏 | 不直接调用平台接口 |
-| core | `src/core/` | 常量、EQ、Track、JSON、队列等纯函数 | 不 import 任何上层 |
+| core | `src/core/` | 常量、EQ、效果链配置、音效预设、Track、JSON、队列等纯函数 | 不 import 任何上层 |
 
 依赖方向（箭头表示「可以依赖」）：
 
@@ -23,7 +24,8 @@ sidepanel ──chrome.runtime──▶ background/router ──▶ handlers
                                                       ├─▶ services ─▶ storage ─▶ chrome.storage.local
                                                       ├─▶ agent ─▶ llm(fetch) / recommendation ─▶ providers
                                                       └─▶ providers ─▶ 平台 HTTP
-offscreen ◀── chrome.runtime.sendMessage ── background（PLAYER_* / EQ_*）
+offscreen ◀── chrome.runtime.sendMessage ── background（PLAYER_* / EQ_* / EFFECTS_*）
+offscreen ──▶ audio/graph（Web Audio 节点图）
 ```
 
 ## 四个运行时上下文
@@ -32,7 +34,7 @@ offscreen ◀── chrome.runtime.sendMessage ── background（PLAYER_* / EQ
 | --- | --- | --- |
 | Service Worker | `background.js` | 装配依赖、路由消息、持有 storage/provider、管理 offscreen 生命周期 |
 | Side Panel | `sidepanel.html` + `sidepanel.js` | 会话与卡片渲染、抽屉、输入栏、播放栏 |
-| Offscreen | `offscreen.html` + `offscreen.js` | `<audio>` 播放、Web Audio 10 段 EQ；**不直接访问网络与 storage** |
+| Offscreen | `offscreen.html` + `offscreen.js` | `<audio>` 播放、Web Audio 10 段 EQ + 效果链；**不直接访问网络与 storage** |
 | Options | `options.html` + `options.js` | 大模型配置、文件夹绑定与同步操作 |
 
 Offscreen 之所以被隔离，是因为 MV3 的 service worker 随时可能被回收，音频必须挂在独立文档上；而解析播放地址需要平台鉴权，所以统一回后台处理（`PLAYER_RESOLVE_URL`）。
@@ -61,15 +63,30 @@ sidepanel            background                      agent                      
 - 中止由 agent 自己持有 `AbortController`，`start()` 会顶掉上一轮；中止后不再写错误卡片。
 - 所有对侧边栏的事件统一走 `notify()`（即 `forwardToSidepanel`）。
 
-### 播放与 EQ
+### 播放与调音
 
 ```text
 sidepanel ──PLAYER_TOGGLE/NEXT/…──▶ background ──▶ offscreen
 offscreen ──PLAYER_RESOLVE_URL────▶ background ──▶ provider.resolveStreamUrl(song)
-sidepanel ──setEqDirect───────────▶ background ──▶ offscreen（Web Audio EQ）
+sidepanel ──setEqDirect───────────▶ background ──▶ offscreen（EQ_SET）
+sidepanel ──setEffectsDirect──────▶ background ──▶ offscreen（EFFECTS_SET）
+sidepanel ──applySoundPreset──────▶ background ──▶ EQ_SET + EFFECTS_SET（一次换一整套）
 ```
 
 `PLAYER_*` 在路由里是**前缀兜底**：除了 `PLAYER_RESOLVE_URL`、`PLAYER_STATE_CHANGED` 需要特判，其余指令直接转发给 offscreen，新增播放指令不必改路由。
+
+音频链在 [src/app/audio/graph.js](../src/app/audio/graph.js)：
+
+```text
+source → preamp → EQ(10 段 peaking) → 宽度 → 串音 → 早期反射 → 混响 → 动态 → destination
+```
+
+- **每个效果块都是干/湿并行的可旁路模块**，默认全关；全关时等价于只有 EQ，听感与旧版本一致（有测试兜底）。
+- 参数归一化在 [src/core/effects.js](../src/core/effects.js)，图只管把参数落到节点上，并用 `setTargetAtTime` 平滑，避免切换预设爆音。
+- 混响用**程序合成的 IR**（指数衰减噪声），不打包音频文件；IR 按参数缓存。
+- 某个块在当前环境缺 API 时只跳过该块，不影响播放与 EQ。
+
+「音效」是比 EQ 高一层的东西：一条音效 = `{ eq, effects }`。内置音效在 [src/core/sound-presets.js](../src/core/sound-presets.js)，用户保存的预设复用 `eqPresets` 表（可带 `effects`）。套用后用户仍然拖 EQ 滑杆，改的只是链里的 EQ 节点，所以「预设之上自由调整」不需要额外机制；UI 用状态指纹判断是否还等于预设，不等就显示「已调整」。
 
 ### 持久化
 
@@ -81,7 +98,7 @@ sidepanel ──setEqDirect───────────▶ background ─�
 | `currentSessionId` | 当前会话 id |
 | `savedPlaylists` | 保存的播放列表 |
 | `eqPresets` | EQ 预设 |
-| `currentEq` / `playerVolume` | 播放器偏好 |
+| `currentEq` / `currentEffects` / `playerVolume` | 播放器偏好 |
 | `llmConfig` | 大模型配置（options 页写入） |
 
 所有「读 → 改 → 写」都必须经过 [src/app/storage](../src/app/storage) 里的仓储，它们共享 [storage-queue.js](../src/app/storage/storage-queue.js) 的按键队列：同一个键串行、不同键并行。直接 `chrome.storage.local.set` 只允许出现在单键、无读改写的场景（偏好回写、文件夹恢复）。
@@ -106,6 +123,7 @@ sidepanel ──setEqDirect───────────▶ background ─�
 | core 不依赖宿主 | `src/core/*` 只 import 同层与常量 |
 | offscreen 不直连平台 | [tests/offscreen.test.js](../tests/offscreen.test.js) 禁止 `music.163.com` / 直接 `fetch` |
 | 会话写入串行 | [tests/app/storage/sessions.test.js](../tests/app/storage/sessions.test.js) 并发用例 |
+| 默认效果链必须完全旁路 | [tests/app/audio/graph.test.js](../tests/app/audio/graph.test.js) |
 | 页面无内联脚本/样式 | [tests/pages.test.js](../tests/pages.test.js) |
 | 版本号单一来源 | `manifest.json`；`fs-sync` 用 `chrome.runtime.getManifest().version` |
 | 平台能力通过 provider 暴露 | [tests/providers](../tests/providers) |
@@ -119,6 +137,7 @@ tests/
 ├── agent/          提示词、LLM 流式、检索计划、调音、对话编排
 ├── app/
 │   ├── storage/    仓储与并发
+│   ├── audio/      效果链节点与旁路行为（假 AudioContext）
 │   ├── services/   业务服务
 │   ├── background/ 路由、处理器、事件
 │   └── sidepanel/  格式化与卡片渲染
@@ -132,4 +151,5 @@ tests/
 ## 演进方向
 
 - **多平台**：实现 `MusicProvider` 并注册（见 [PROVIDERS.md](PROVIDERS.md)），UI 与检索链路无需改动。
+- **空间类音效**：效果链骨架已就位，接下来按「动态与宽化 → 空间与混响」两批补内置音效（前置听感、宽阔环绕、5.1 等）。
 - **DSH 插件**：`src/core`、`src/providers`、`src/agent` 都不依赖 `chrome`，可直接被宿主复用；剩余工作是提供 `ctx.tools.register` 适配层与客户端插槽。

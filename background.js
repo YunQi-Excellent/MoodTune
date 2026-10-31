@@ -3,6 +3,7 @@ import {
   EQ_CONFIG,
   SESSION_CONFIG,
 } from './src/core/constants.js';
+import { normalizeEffects } from './src/core/effects.js';
 import { normalizeEq } from './src/core/eq.js';
 import { sanitizeTrack } from './src/core/track.js';
 import { createProviderRegistry } from './src/providers/index.js';
@@ -17,6 +18,7 @@ import { createMusicHandlers } from './src/app/background/handlers/music.js';
 import { createPlayerHandlers } from './src/app/background/handlers/player.js';
 import { createPlaylistHandlers } from './src/app/background/handlers/playlists.js';
 import { createSessionHandlers } from './src/app/background/handlers/sessions.js';
+import { createSoundHandlers } from './src/app/background/handlers/sound.js';
 import { createEqPresetService, createPlaylistService } from './src/app/services/assets.js';
 import { createMusicService } from './src/app/services/music.js';
 import { createPlayerService } from './src/app/services/player.js';
@@ -96,7 +98,12 @@ const normalizeSong = song => sanitizeTrack(song, { provider: DEFAULT_PROVIDER_I
 
 const sessions = createSessionService({ store: sessionsStore, player, normalizeSong });
 const playlists = createPlaylistService({ store: playlistsStore, player, normalizeSong });
-const eqPresets = createEqPresetService({ store: eqPresetsStore, player, normalizeEq });
+const eqPresets = createEqPresetService({
+  store: eqPresetsStore,
+  player,
+  normalizeEq,
+  normalizeEffects,
+});
 const music = createMusicService({ providers: musicProviders });
 
 /* =====================================================
@@ -187,6 +194,7 @@ const routeMessage = createMessageRouter({
 
     ...createPlaylistHandlers({ playlists, sessions, player }),
     ...createEqHandlers({ presets: eqPresets, player }),
+    ...createSoundHandlers({ player, presets: eqPresets }),
     ...createChatHandlers({
       chat: chatAgent,
       sessions,

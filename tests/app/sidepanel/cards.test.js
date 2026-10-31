@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { BUILTIN_SOUND_PRESETS } from '../../../src/core/sound-presets.js';
 import { renderAgentBody, renderEqCard, renderPlanCard } from '../../../src/app/sidepanel/cards.js';
 import { EQ_FREQUENCIES } from '../../../src/core/constants.js';
 
@@ -91,6 +92,32 @@ describe('renderEqCard', () => {
   it('理由会转义，缺省时不渲染', () => {
     expect(renderEqCard({ id: 'm', eq: {}, reason: '<b>亮</b>' })).toContain('&lt;b&gt;亮&lt;/b&gt;');
     expect(renderEqCard({ id: 'm', eq: {} })).not.toContain('stats-line yellow');
+  });
+
+  it('渲染全部音效 chips，并高亮与当前 EQ 一致的那个', () => {
+    const flat = BUILTIN_SOUND_PRESETS.find(preset => preset.id === 'flat');
+    const html = renderEqCard({ id: 'm', eq: flat.eq, effects: flat.effects });
+
+    expect(html.match(/data-sound-id=/g)).toHaveLength(BUILTIN_SOUND_PRESETS.length);
+    expect(html).toContain('data-action="apply-sound-chip"');
+    expect(html).toContain('sound-chip active');
+  });
+
+  it('EQ 不等于任何预设时 chips 不高亮', () => {
+    const eq = {
+      preampDb: 0,
+      bands: EQ_FREQUENCIES.map(frequencyHz => ({ frequencyHz, gainDb: 1 })),
+    };
+
+    const html = renderEqCard({ id: 'm', eq });
+
+    expect(html.match(/data-sound-id=/g)).toHaveLength(BUILTIN_SOUND_PRESETS.length);
+    expect(html).not.toContain('sound-chip active');
+  });
+
+  it('带一个进入音效库的入口', () => {
+    const html = renderEqCard({ id: 'm', eq: {} });
+    expect(html).toContain('data-action="open-sound-library"');
   });
 
   it('缺 EQ 时按平坦渲染，不抛错', () => {

@@ -1,6 +1,7 @@
 import { EQ_FREQUENCIES } from './src/core/constants.js';
 import { defaultEq } from './src/core/eq.js';
 import { createId } from './src/core/ids.js';
+import { BUILTIN_SOUND_PRESETS, soundSignature } from './src/core/sound-presets.js';
 
 import { $, $$ } from './src/app/dom.js';
 import { escapeHtml, fmtClock, fmtDate } from './src/app/sidepanel/format.js';
@@ -28,7 +29,9 @@ const state = {
   sessions: [],
   eqPresets: [],
   savedPlaylists: [],
-  libraryTab: 'eq',
+  currentEq: null,
+  currentEffects: null,
+  libraryTab: 'sound',
   messageNodes: new Map(),
   thinkingRecords: [],
   running: false,
@@ -37,7 +40,7 @@ const state = {
 /* ================= Header ================= */
 $('#sessionBtn').addEventListener('click', openSessionDrawer);
 $('#cartBtn').addEventListener('click', openCartDrawer);
-$('#libraryBtn').addEventListener('click', openLibraryDrawer);
+$('#libraryBtn').addEventListener('click', () => openLibraryDrawer());
 $('#logBtn').addEventListener('click', openLogDrawer);
 $('#themeBtn').addEventListener('click', toggleTheme);
 $('#settingsBtn').addEventListener('click', () => chrome.runtime.openOptionsPage());
@@ -384,7 +387,12 @@ $('#cartSettleBtn').addEventListener('click', async () => {
 });
 
 /* ================= 我的内容 抽屉 ================= */
-function openLibraryDrawer() {
+/** @param {'sound'|'eq'|'playlists'} [tab] 指定打开时停在哪一页 */
+function openLibraryDrawer(tab) {
+  if (typeof tab === 'string') {
+    state.libraryTab = tab;
+    $$('.lib-tab').forEach(t => t.classList.toggle('active', t.getAttribute('data-lib') === tab));
+  }
   $('#library-drawer').classList.add('open');
   $('#backdrop').classList.add('show');
   refreshLibrary();
@@ -399,24 +407,77 @@ $$('.lib-tab').forEach(tab => {
   tab.addEventListener('click', () => {
     state.libraryTab = tab.getAttribute('data-lib');
     $$('.lib-tab').forEach(t => t.classList.toggle('active', t === tab));
-    renderLibraryBody();
+    refreshLibrary();
   });
 });
 
 async function refreshLibrary() {
-  const [eqR, plR] = await Promise.all([
+  const wantsSoundState = state.libraryTab === 'sound';
+  const [eqR, plR, soundR] = await Promise.all([
     sendMsg({ action: 'listEqPresets' }),
     sendMsg({ action: 'listSavedPlaylists' }),
+    wantsSoundState
+      ? Promise.all([
+        sendMsg({ action: 'getEqState' }),
+        sendMsg({ action: 'getEffectsState' }),
+      ])
+      : Promise.resolve(null),
   ]);
   state.eqPresets = eqR?.presets || [];
   state.savedPlaylists = plR?.playlists || [];
   $('#eqCount').textContent = state.eqPresets.length;
   $('#plCount').textContent = state.savedPlaylists.length;
+
+  if (soundR) {
+    const [eqState, effectsState] = soundR;
+    state.currentEq = eqState?.ok ? eqState.eq : null;
+    state.currentEffects = effectsState?.ok ? effectsState.effects : null;
+  }
+
   renderLibraryBody();
+}
+
+/** 当前生效的音效（用状态指纹匹配，手动拧过滑块会自动失去「使用中」）。 */
+function currentSoundPreset() {
+  if (!state.currentEq) return null;
+  const signature = soundSignature({ eq: state.currentEq, effects: state.currentEffects });
+  return BUILTIN_SOUND_PRESETS.find(
+    preset => soundSignature({ eq: preset.eq, effects: preset.effects }) === signature,
+  ) || null;
 }
 
 function renderLibraryBody() {
   const body = $('#libraryBody');
+
+  if (state.libraryTab === 'sound') {
+    const active = currentSoundPreset();
+    const cards = BUILTIN_SOUND_PRESETS.map((preset) => {
+      const isActive = active?.id === preset.id;
+      return `
+        <button class="sound-card${isActive ? ' active' : ''}"
+                data-sound-id="${escapeHtml(preset.id)}"
+                data-accent="${escapeHtml(preset.accent || 'slate')}">
+          <span class="sound-name">${escapeHtml(preset.name)}</span>
+          <span class="sound-tag">${escapeHtml(preset.tagline || '')}</span>
+          ${isActive ? '<span class="sound-state">使用中</span>' : ''}
+        </button>
+      `;
+    }).join('');
+
+    const hint = !state.currentEq
+      ? ''
+      : active
+        ? `当前：${escapeHtml(active.name)}`
+        : '当前：自定义（在预设基础上手动调过）';
+
+    body.innerHTML = `
+      <div class="sound-intro">点一下就整套切换：EQ + 空间效果。切换后仍然可以拖动 EQ 滑杆微调。</div>
+      <div class="sound-grid">${cards}</div>
+      ${hint ? `<div class="sound-hint">${hint}</div>` : ''}
+    `;
+    return;
+  }
+
   if (state.libraryTab === 'eq') {
     if (!state.eqPresets.length) {
       body.innerHTML = '<div style="text-align:center;color:var(--fg-3);font-size:12px;padding:30px 0;">还没有保存的调音<br><span style="font-size:11px;">跟 Agent 说「把这套调音存成 XX」</span></div>';
@@ -465,7 +526,39 @@ function renderLibraryBody() {
   }
 }
 
+/** 套用一个内置音效：EQ + 效果链一起落盘。 */
+async function applySoundPresetCard(card) {
+  const id = card.getAttribute('data-sound-id');
+  const preset = BUILTIN_SOUND_PRESETS.find(item => item.id === id);
+  if (!preset) return;
+
+  card.classList.add('applying');
+  const response = await sendMsg({ action: 'applySoundPreset', id });
+  card.classList.remove('applying');
+
+  if (!response?.ok) {
+    pushLog('err', '切换音效失败：' + (response?.error || '未知'));
+    return;
+  }
+
+  state.currentEq = response.eq || state.currentEq;
+  state.currentEffects = response.effects || state.currentEffects;
+
+  if (state.currentSession && response.eq) {
+    await sendMsg({ action: 'cartSetEq', sessionId: state.currentSession.id, eq: response.eq });
+  }
+
+  pushLog('ok', `已切换到「${preset.name}」`);
+  renderLibraryBody();
+}
+
 $('#libraryBody').addEventListener('click', async e => {
+  const soundCard = e.target.closest('[data-sound-id]');
+  if (soundCard) {
+    await applySoundPresetCard(soundCard);
+    return;
+  }
+
   const btn = e.target.closest('[data-act]');
   if (!btn) return;
   const act = btn.getAttribute('data-act');
@@ -611,6 +704,10 @@ $('#dock-drawer').addEventListener('click', async e => {
   const dock = item.getAttribute('data-dock');
   closeDock();
 
+  if (dock === 'sound') {
+    openLibraryDrawer('sound');
+    return;
+  }
   if (dock === 'eq') {
     const r = await sendMsg({ action: 'openEqPanel' });
     if (!r?.ok) {
@@ -715,6 +812,82 @@ function appendMessageNode(m, { animate = false } = {}) {
 }
 
 /* ================= 卡片交互 ================= */
+/** 把一张 EQ 卡片的滑杆同步成给定 EQ。 */
+function syncEqCardInputs(msgId, eq) {
+  const node = state.messageNodes.get(msgId);
+  if (!node) return;
+
+  const preamp = Number(eq?.preampDb) || 0;
+  const preampInput = node.querySelector('[data-eq-band="preamp"]');
+  if (preampInput) {
+    preampInput.value = preamp;
+    const val = preampInput.parentElement.querySelector('.value');
+    if (val) val.textContent = `${preamp > 0 ? '+' : ''}${preamp} dB`;
+  }
+
+  for (const frequency of EQ_FREQUENCIES) {
+    const band = (eq?.bands || []).find(item => Number(item.frequencyHz) === frequency);
+    const gain = Number(band?.gainDb) || 0;
+    const input = node.querySelector(`[data-eq-band="${frequency}"]`);
+    if (!input) continue;
+    input.value = gain;
+    const val = input.parentElement.querySelector('.value');
+    if (val) val.textContent = `${gain > 0 ? '+' : ''}${gain} dB`;
+  }
+
+  const badge = node.querySelector('.eq-header .badge:last-child');
+  if (badge) badge.textContent = `${preamp > 0 ? '+' : ''}${preamp} dB 前级`;
+}
+
+/** 根据卡片上的 EQ 刷新 chips 的「选中」状态。 */
+function highlightSoundChips(msgId, message) {
+  const node = state.messageNodes.get(msgId);
+  if (!node) return;
+
+  const current = soundSignature({
+    eq: message?.eq,
+    effects: message?.effects || state.currentEffects,
+  });
+
+  for (const chip of node.querySelectorAll('[data-sound-id]')) {
+    const preset = BUILTIN_SOUND_PRESETS.find(item => item.id === chip.getAttribute('data-sound-id'));
+    if (!preset) continue;
+    chip.classList.toggle(
+      'active',
+      soundSignature({ eq: preset.eq, effects: preset.effects }) === current,
+    );
+  }
+}
+
+/** 点音效 chip：整套写进这张卡片（滑杆跟着变），并同步到播放器。 */
+async function applySoundChip(msg, msgId, btn) {
+  const preset = BUILTIN_SOUND_PRESETS.find(item => item.id === btn.getAttribute('data-sound-id'));
+  if (!preset) return;
+
+  btn.disabled = true;
+  const response = await sendMsg({ action: 'applySoundPreset', id: preset.id });
+  btn.disabled = false;
+
+  if (!response?.ok) {
+    pushLog('err', '切换音效失败：' + (response?.error || '未知'));
+    return;
+  }
+
+  const eq = response.eq || preset.eq;
+  msg.eq = eq;
+  msg.effects = response.effects || preset.effects;
+  state.currentEq = eq;
+  state.currentEffects = msg.effects;
+
+  syncEqCardInputs(msgId, eq);
+  highlightSoundChips(msgId, msg);
+
+  if (state.currentSession) {
+    sendMsg({ action: 'cartSetEq', sessionId: state.currentSession.id, eq }).catch(() => {});
+  }
+  pushLog('ok', `已切换到「${preset.name}」`);
+}
+
 $('#chatStream').addEventListener('click', async e => {
   const toggle = e.target.closest('.thinking-toggle');
   if (toggle) {
@@ -726,9 +899,20 @@ $('#chatStream').addEventListener('click', async e => {
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
   const action = btn.getAttribute('data-action');
+
+  if (action === 'open-sound-library') {
+    openLibraryDrawer('sound');
+    return;
+  }
+
   const msgId = btn.getAttribute('data-msg-id');
   const msg = (state.currentSession?.messages || []).find(x => x.id === msgId);
   if (!msg) return;
+
+  if (action === 'apply-sound-chip') {
+    await applySoundChip(msg, msgId, btn);
+    return;
+  }
 
   if (action === 'add-to-cart') {
     const picks = msg.picks || [];
@@ -776,6 +960,8 @@ $('#chatStream').addEventListener('click', async e => {
     }
     const eq = defaultEq();
     msg.eq = eq;
+    state.currentEq = eq;
+    highlightSoundChips(msgId, msg);
     sendMsg({ action: 'setEqDirect', eq }).catch(() => {});
     if (state.currentSession) {
       await sendMsg({ action: 'cartSetEq', sessionId: state.currentSession.id, eq });
@@ -832,6 +1018,9 @@ $('#chatStream').addEventListener('input', async e => {
   });
   const eq = { enabled: true, preampDb, bands };
   msg.eq = eq;
+  // 让「我的内容 → 音效」能立刻反映出手动调整
+  state.currentEq = eq;
+  highlightSoundChips(msgId, msg);
 
   if (band === 'preamp') {
     const eqHeaderBadge = node.querySelector('.eq-header .badge:last-child');

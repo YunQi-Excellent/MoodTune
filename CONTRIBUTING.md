@@ -64,6 +64,8 @@ npm --cache /tmp/npm-cache install
 | 新消息接口 | `src/app/background/handlers/` |
 | 会话 / 购物车 / 结算 | `src/app/services/sessions.js` |
 | 保存的播放列表 / EQ 预设 | `src/app/services/assets.js` |
+| 效果链节点与参数 | `src/app/audio/graph.js`、`src/core/effects.js` |
+| 内置音效预设 | `src/core/sound-presets.js` |
 | 播放控制 / 平台解析 | `src/app/services/player.js` |
 | 侧边栏 UI | `sidepanel.js`、`src/app/sidepanel/`、`sidepanel.css` |
 | 设置页 | `options.js`、`options.css` |
@@ -104,6 +106,8 @@ test: 补充检索计划测试
 - [ ] 关闭侧边栏后音乐继续播放，重开侧边栏状态恢复
 - [ ] 网页版网易云正在播放时，插件播放会自动暂停页面音频
 - [ ] EQ 十段与预设应用、重置
+- [ ] 音效：我的内容 → 音效，逐个切换能听出差别；切完再拖 EQ 滑杆，提示从「使用中」变成「已调整」
+- [ ] 调音卡片顶部的音效 chips：点一下滑杆整体跳到那套值，chips 高亮跟着变
 - [ ] 会话：新建 / 切换 / 重命名 / 删除 / 恢复
 - [ ] 设置页：配置大模型、绑定文件夹、立即同步、从文件恢复
 

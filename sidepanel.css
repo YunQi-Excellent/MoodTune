@@ -519,6 +519,41 @@ html.dark .track-item .reason { color: var(--brand-400); }
   margin-bottom: 8px;
 }
 .eq-header .title { font-weight: 700; font-size: 13px; color: var(--fg-0); }
+.sound-chips {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin: 0 0 8px;
+}
+.sound-chip {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--soft-bg);
+  color: var(--fg-1);
+  font: inherit; font-size: 11px; font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.sound-chip:hover {
+  border-color: var(--brand-500);
+  color: var(--brand-600);
+}
+.sound-chip.active {
+  background: var(--brand-50);
+  border-color: var(--brand-500);
+  color: var(--brand-600);
+}
+html.dark .sound-chip.active {
+  background: var(--brand-100);
+  color: var(--brand-400);
+}
+.eq-header-right { display: flex; align-items: center; gap: 8px; }
+.eq-link {
+  background: transparent; border: 0; padding: 0;
+  color: var(--brand-600); cursor: pointer;
+  font-size: 11px; font-weight: 600;
+}
+.eq-link:hover { text-decoration: underline; }
+html.dark .eq-link { color: var(--brand-400); }
 .eq-slider {
   display: grid; grid-template-columns: 60px 1fr 52px;
   gap: 6px; align-items: center;
@@ -1140,6 +1175,71 @@ html.dark .lib-tab.active { color: var(--brand-400); }
   color: var(--brand-600);
 }
 html.dark .lib-tab.active .count { color: var(--brand-400); }
+
+/* ---- 音效卡片（我的内容 → 音效） ---- */
+.sound-intro {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--fg-3);
+  padding: 2px 2px 10px;
+}
+.sound-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.sound-card {
+  --sound-accent: var(--fg-3);
+  position: relative;
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 11px 12px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--sound-accent);
+  border-radius: 12px;
+  background: var(--soft-bg);
+  color: var(--fg-0);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.sound-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+}
+.sound-card.applying { opacity: 0.6; }
+.sound-card.active {
+  border-color: var(--brand-500);
+  border-left-color: var(--brand-500);
+  box-shadow: 0 0 0 1px var(--brand-500) inset;
+}
+.sound-name {
+  font-size: 12.5px; font-weight: 700;
+  padding-right: 42px;
+}
+.sound-tag {
+  font-size: 11px; line-height: 1.45;
+  color: var(--fg-3);
+}
+.sound-state {
+  position: absolute; top: 9px; right: 10px;
+  font-size: 10px; font-weight: 600;
+  color: var(--brand-600);
+}
+html.dark .sound-state { color: var(--brand-400); }
+.sound-hint {
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--fg-3);
+  text-align: center;
+}
+
+.sound-card[data-accent="slate"] { --sound-accent: #94a3b8; }
+.sound-card[data-accent="sky"] { --sound-accent: #38bdf8; }
+.sound-card[data-accent="violet"] { --sound-accent: #a78bfa; }
+.sound-card[data-accent="amber"] { --sound-accent: #f59e0b; }
+.sound-card[data-accent="teal"] { --sound-accent: #14b8a6; }
+.sound-card[data-accent="rose"] { --sound-accent: #fb7185; }
 
 .backdrop {
   position: absolute; inset: 0;
