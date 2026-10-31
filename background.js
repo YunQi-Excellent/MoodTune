@@ -19,6 +19,8 @@ import { extractJson } from './src/core/json.js';
 import { sanitizeTrack, trackKey } from './src/core/track.js';
 import { createProviderRegistry } from './src/providers/index.js';
 import { createNeteaseExternalPlayer } from './src/app/background/netease-external-player.js';
+import { createSessionStore } from './src/app/storage/sessions.js';
+import { createAssetStore } from './src/app/storage/assets.js';
 
 import {
   getFsStatus,
@@ -40,55 +42,58 @@ const INTENT_STATE_KEY = 'intentState';
 const SAVED_PLAYLISTS_KEY = 'savedPlaylists';
 const SAVED_PLAYLISTS_LIMIT = 100;
 const EQ_PRESETS_KEY = 'eqPresets';
-const SESSIONS_KEY = 'chatSessions';
-const CURRENT_SESSION_KEY = 'currentSessionId';
 
 const musicProviders = createProviderRegistry({
   externalPlayer: createNeteaseExternalPlayer(),
 });
 
 /* =====================================================
+   仓储实例
+   所有 storage 写入都经过 storageQueue，避免并发读改写互相覆盖
+   ===================================================== */
+const sessionsStore = createSessionStore({
+  area: chrome.storage.local,
+  maxSessions: SESSION_CONFIG.maxSessions,
+  maxMessages: SESSION_CONFIG.maxMessagesPerSession,
+});
+
+const playlistsStore = createAssetStore({
+  area: chrome.storage.local,
+  key: SAVED_PLAYLISTS_KEY,
+  limit: SAVED_PLAYLISTS_LIMIT,
+  idPrefix: 'pl',
+  notFoundMessage: '找不到这个播放列表',
+});
+
+const eqPresetsStore = createAssetStore({
+  area: chrome.storage.local,
+  key: EQ_PRESETS_KEY,
+  limit: EQ_CONFIG.presetsLimit,
+  idPrefix: 'eq',
+  notFoundMessage: '找不到这个调音',
+});
+
+/* =====================================================
    保存的播放列表
    ===================================================== */
-async function getSavedPlaylists() {
-  const r = await chrome.storage.local.get(SAVED_PLAYLISTS_KEY);
-  return Array.isArray(r[SAVED_PLAYLISTS_KEY]) ? r[SAVED_PLAYLISTS_KEY] : [];
-}
 function sanitizeSong(song) {
   return sanitizeTrack(song, { provider: DEFAULT_PROVIDER_ID });
 }
+async function getSavedPlaylists() {
+  return playlistsStore.list();
+}
 async function savePlaylist({ name, songs, source }) {
   if (!Array.isArray(songs) || songs.length === 0) throw new Error('播放列表为空');
-  const list = await getSavedPlaylists();
-  const item = {
-    id: createId('pl'),
-    name: String(name || '未命名').trim().slice(0, 60) || '未命名',
-    songs: songs.map(sanitizeSong),
-    createdAt: Date.now(),
-    source: source || 'manual',
-  };
-  list.unshift(item);
-  if (list.length > SAVED_PLAYLISTS_LIMIT) list.length = SAVED_PLAYLISTS_LIMIT;
-  await chrome.storage.local.set({ [SAVED_PLAYLISTS_KEY]: list });
-  return item;
+  return playlistsStore.add({ name, songs: songs.map(sanitizeSong), source });
 }
 async function deletePlaylist(id) {
-  const list = await getSavedPlaylists();
-  const next = list.filter(p => p.id !== id);
-  await chrome.storage.local.set({ [SAVED_PLAYLISTS_KEY]: next });
-  return next;
+  return playlistsStore.remove(id);
 }
 async function renamePlaylist(id, name) {
-  const list = await getSavedPlaylists();
-  const target = list.find(p => p.id === id);
-  if (!target) throw new Error('找不到这个播放列表');
-  target.name = String(name || '未命名').trim().slice(0, 60) || '未命名';
-  await chrome.storage.local.set({ [SAVED_PLAYLISTS_KEY]: list });
-  return list;
+  return playlistsStore.rename(id, name);
 }
 async function playSavedPlaylist(id) {
-  const list = await getSavedPlaylists();
-  const target = list.find(p => p.id === id);
+  const target = await playlistsStore.get(id);
   if (!target) throw new Error('找不到这个播放列表');
   await sendToOffscreen('PLAYER_SET_PLAYLIST', { songs: target.songs, autoPlay: true });
   return target;
@@ -98,41 +103,20 @@ async function playSavedPlaylist(id) {
    EQ 预设
    ===================================================== */
 async function getEqPresets() {
-  const r = await chrome.storage.local.get(EQ_PRESETS_KEY);
-  return Array.isArray(r[EQ_PRESETS_KEY]) ? r[EQ_PRESETS_KEY] : [];
+  return eqPresetsStore.list();
 }
 async function saveEqPreset({ name, eq, source }) {
   if (!eq) throw new Error('没有可保存的调音');
-  const list = await getEqPresets();
-  const item = {
-    id: createId('eq'),
-    name: String(name || '未命名').trim().slice(0, 60) || '未命名',
-    eq: normalizeEq(eq),
-    createdAt: Date.now(),
-    source: source || 'manual',
-  };
-  list.unshift(item);
-  if (list.length > EQ_CONFIG.presetsLimit) list.length = EQ_CONFIG.presetsLimit;
-  await chrome.storage.local.set({ [EQ_PRESETS_KEY]: list });
-  return item;
+  return eqPresetsStore.add({ name, eq: normalizeEq(eq), source });
 }
 async function deleteEqPreset(id) {
-  const list = await getEqPresets();
-  const next = list.filter(p => p.id !== id);
-  await chrome.storage.local.set({ [EQ_PRESETS_KEY]: next });
-  return next;
+  return eqPresetsStore.remove(id);
 }
 async function renameEqPreset(id, name) {
-  const list = await getEqPresets();
-  const target = list.find(p => p.id === id);
-  if (!target) throw new Error('找不到这个调音');
-  target.name = String(name || '未命名').trim().slice(0, 60) || '未命名';
-  await chrome.storage.local.set({ [EQ_PRESETS_KEY]: list });
-  return list;
+  return eqPresetsStore.rename(id, name);
 }
 async function applyEqPreset(id) {
-  const list = await getEqPresets();
-  const target = list.find(p => p.id === id);
+  const target = await eqPresetsStore.get(id);
   if (!target) throw new Error('找不到这个调音');
   const r = await sendToOffscreen('EQ_SET', { eq: target.eq });
   return { preset: target, eq: r?.eq };
@@ -142,162 +126,77 @@ async function applyEqPreset(id) {
    Session（含 cart / result）
    ===================================================== */
 async function getSessions() {
-  const r = await chrome.storage.local.get(SESSIONS_KEY);
-  return Array.isArray(r[SESSIONS_KEY]) ? r[SESSIONS_KEY] : [];
-}
-async function saveSessions(sessions) {
-  await chrome.storage.local.set({ [SESSIONS_KEY]: sessions });
+  return sessionsStore.list();
 }
 async function getCurrentSession() {
-  const idR = await chrome.storage.local.get(CURRENT_SESSION_KEY);
-  const currentId = idR[CURRENT_SESSION_KEY];
-  if (!currentId) return null;
-  const sessions = await getSessions();
-  return sessions.find(s => s.id === currentId) || null;
+  return sessionsStore.getCurrent();
 }
 async function createSession(name) {
-  const sessions = await getSessions();
-  const session = {
-    id: createId('sess'),
-    name: String(name || '新会话').trim().slice(0, 40) || '新会话',
-    createdAt: Date.now(),
-    messages: [],
-    cart: [],
-    cartEq: null,
-    result: null,
-    songCount: 0,
-    lastActiveAt: Date.now(),
-  };
-  sessions.unshift(session);
-  if (sessions.length > SESSION_CONFIG.maxSessions) sessions.length = SESSION_CONFIG.maxSessions;
-  await saveSessions(sessions);
-  await chrome.storage.local.set({ [CURRENT_SESSION_KEY]: session.id });
-  return session;
+  return sessionsStore.create(name);
 }
 async function switchSession(id) {
-  const sessions = await getSessions();
-  const target = sessions.find(s => s.id === id);
-  if (!target) throw new Error('找不到这个会话');
-  await chrome.storage.local.set({ [CURRENT_SESSION_KEY]: id });
-  return target;
+  return sessionsStore.switchTo(id);
 }
 async function deleteSession(id) {
-  const sessions = await getSessions();
-  const next = sessions.filter(s => s.id !== id);
-  await saveSessions(next);
-  const idR = await chrome.storage.local.get(CURRENT_SESSION_KEY);
-  if (idR[CURRENT_SESSION_KEY] === id) {
-    if (next.length > 0) await chrome.storage.local.set({ [CURRENT_SESSION_KEY]: next[0].id });
-    else await chrome.storage.local.remove(CURRENT_SESSION_KEY);
-  }
-  return next;
+  return sessionsStore.remove(id);
 }
 async function renameSession(id, name) {
-  const sessions = await getSessions();
-  const target = sessions.find(s => s.id === id);
-  if (!target) throw new Error('找不到会话');
-  target.name = String(name || '').trim().slice(0, 40) || '未命名';
-  await saveSessions(sessions);
-  return target;
+  return sessionsStore.rename(id, name);
 }
 async function appendSessionMessage(sessionId, message) {
-  const sessions = await getSessions();
-  let target = sessions.find(s => s.id === sessionId);
-  if (!target) {
-    const fresh = {
-      id: sessionId || ('sess-' + Date.now().toString(36)),
-      name: '新会话',
-      createdAt: Date.now(),
-      messages: [],
-      cart: [],
-      cartEq: null,
-      result: null,
-      songCount: 0,
-      lastActiveAt: Date.now(),
-    };
-    fresh.messages.push(message);
-    sessions.unshift(fresh);
-    await saveSessions(sessions);
-    return fresh;
-  }
-  if (message.id && target.messages.some(m => m.id === message.id)) return target;
-  target.messages.push(message);
-  if (target.messages.length > SESSION_CONFIG.maxMessagesPerSession) {
-    target.messages = target.messages.slice(-SESSION_CONFIG.maxMessagesPerSession);
-  }
-  target.lastActiveAt = Date.now();
-  await saveSessions(sessions);
-  return target;
+  return sessionsStore.appendMessage(sessionId, message);
 }
 async function updateSession(sessionId, patch) {
-  const sessions = await getSessions();
-  const target = sessions.find(s => s.id === sessionId);
-  if (!target) return null;
-  Object.assign(target, patch);
-  target.lastActiveAt = Date.now();
-  await saveSessions(sessions);
-  return target;
+  return sessionsStore.update(sessionId, patch);
 }
 
 /* =====================================================
    购物车操作
+   读改写都在会话仓储的锁内完成
    ===================================================== */
 async function cartAdd(sessionId, songs) {
   if (!Array.isArray(songs) || songs.length === 0) return null;
-  const sessions = await getSessions();
-  const target = sessions.find(s => s.id === sessionId);
-  if (!target) throw new Error('找不到会话');
-  target.cart = Array.isArray(target.cart) ? target.cart : [];
-  const existing = new Set(target.cart.map(s => s.id));
-  let added = 0;
-  for (const s of songs) {
-    if (existing.has(s.id)) continue;
-    target.cart.push(sanitizeSong(s));
-    existing.add(s.id);
-    added++;
-  }
-  target.lastActiveAt = Date.now();
-  await saveSessions(sessions);
-  return { added, total: target.cart.length };
+  return sessionsStore.mutate(sessionId, target => {
+    target.cart = Array.isArray(target.cart) ? target.cart : [];
+    const existing = new Set(target.cart.map(s => s.id));
+    let added = 0;
+    for (const s of songs) {
+      if (existing.has(s.id)) continue;
+      target.cart.push(sanitizeSong(s));
+      existing.add(s.id);
+      added++;
+    }
+    return { added, total: target.cart.length };
+  });
 }
 async function cartRemove(sessionId, songIds) {
-  const sessions = await getSessions();
-  const target = sessions.find(s => s.id === sessionId);
-  if (!target) throw new Error('找不到会话');
   const removeSet = new Set(songIds);
-  target.cart = (target.cart || []).filter(s => !removeSet.has(s.id));
-  target.lastActiveAt = Date.now();
-  await saveSessions(sessions);
-  return { total: target.cart.length };
+  return sessionsStore.mutate(sessionId, target => {
+    target.cart = (target.cart || []).filter(s => !removeSet.has(s.id));
+    return { total: target.cart.length };
+  });
 }
 async function cartReorder(sessionId, orderedIds) {
-  const sessions = await getSessions();
-  const target = sessions.find(s => s.id === sessionId);
-  if (!target) throw new Error('找不到会话');
-  const cartMap = new Map((target.cart || []).map(s => [s.id, s]));
-  const next = [];
-  for (const id of orderedIds) {
-    const item = cartMap.get(id);
-    if (item) { next.push(item); cartMap.delete(id); }
-  }
-  for (const item of cartMap.values()) next.push(item);
-  target.cart = next;
-  target.lastActiveAt = Date.now();
-  await saveSessions(sessions);
-  return { total: next.length };
+  return sessionsStore.mutate(sessionId, target => {
+    const cartMap = new Map((target.cart || []).map(s => [s.id, s]));
+    const next = [];
+    for (const id of orderedIds) {
+      const item = cartMap.get(id);
+      if (item) { next.push(item); cartMap.delete(id); }
+    }
+    for (const item of cartMap.values()) next.push(item);
+    target.cart = next;
+    return { total: next.length };
+  });
 }
 async function cartClear(sessionId) {
-  const sessions = await getSessions();
-  const target = sessions.find(s => s.id === sessionId);
-  if (!target) throw new Error('找不到会话');
-  target.cart = [];
-  target.lastActiveAt = Date.now();
-  await saveSessions(sessions);
-  return { total: 0 };
+  return sessionsStore.mutate(sessionId, target => {
+    target.cart = [];
+    return { total: 0 };
+  });
 }
 async function cartSettle(sessionId) {
-  const sessions = await getSessions();
-  const target = sessions.find(s => s.id === sessionId);
+  const target = await sessionsStore.get(sessionId);
   if (!target) throw new Error('找不到会话');
   const cart = Array.isArray(target.cart) ? target.cart : [];
   if (cart.length === 0) throw new Error('会话歌单是空的');
@@ -320,38 +219,34 @@ async function cartSettle(sessionId) {
     eqSource: target.result?.eqSource || null,
     settledAt: Date.now(),
   };
-  target.result = result;
-  target.songCount = cart.length;
-  target.lastActiveAt = Date.now();
-  await saveSessions(sessions);
+  await sessionsStore.update(sessionId, { result, songCount: cart.length });
   return { ok: true, count: cart.length, result };
 }
 async function restoreSession(id) {
-  const sessions = await getSessions();
-  const target = sessions.find(s => s.id === id);
+  const target = await sessionsStore.get(id);
   if (!target) throw new Error('找不到会话');
 
   const result = { eq: null, songCount: 0, messages: [] };
-  const r = target.result;
+  const snapshot = target.result;
 
-  if (r) {
-    if (r.eq) {
+  if (snapshot) {
+    if (snapshot.eq) {
       try {
-        const res = await sendToOffscreen('EQ_SET', { eq: r.eq });
+        const res = await sendToOffscreen('EQ_SET', { eq: snapshot.eq });
         if (res?.ok) {
-          result.eq = res.eq || r.eq;
+          result.eq = res.eq || snapshot.eq;
           result.messages.push('已应用调音快照');
         }
       } catch (e) {
         result.messages.push('恢复调音失败：' + (e?.message || e));
       }
     }
-    if (Array.isArray(r.playlist) && r.playlist.length > 0) {
+    if (Array.isArray(snapshot.playlist) && snapshot.playlist.length > 0) {
       try {
         await pausePlatformPlayback();
-        await sendToOffscreen('PLAYER_SET_PLAYLIST', { songs: r.playlist, autoPlay: true });
-        result.songCount = r.playlist.length;
-        result.messages.push(`已恢复 ${r.playlist.length} 首歌`);
+        await sendToOffscreen('PLAYER_SET_PLAYLIST', { songs: snapshot.playlist, autoPlay: true });
+        result.songCount = snapshot.playlist.length;
+        result.messages.push(`已恢复 ${snapshot.playlist.length} 首歌`);
       } catch (e) {
         result.messages.push('恢复歌单失败：' + (e?.message || e));
       }
@@ -372,7 +267,7 @@ async function restoreSession(id) {
     }
   }
 
-  await chrome.storage.local.set({ [CURRENT_SESSION_KEY]: id });
+  await sessionsStore.setCurrent(id);
   return result;
 }
 
@@ -1527,17 +1422,13 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true;
   }
   if (req?.action === 'updateSessionResultSource') {
-    (async () => {
-      try {
-        const sessions = await getSessions();
-        const t = sessions.find(s => s.id === req.sessionId);
-        if (!t || !t.result) throw new Error('会话或结果不存在');
-        if (req.playlistSource !== undefined) t.result.playlistSource = req.playlistSource;
-        if (req.eqSource !== undefined) t.result.eqSource = req.eqSource;
-        await saveSessions(sessions);
-        sendResponse({ ok: true });
-      } catch (e) { sendResponse({ ok: false, error: e?.message || String(e) }); }
-    })();
+    sessionsStore.mutate(req.sessionId, t => {
+      if (!t.result) throw new Error('会话或结果不存在');
+      if (req.playlistSource !== undefined) t.result.playlistSource = req.playlistSource;
+      if (req.eqSource !== undefined) t.result.eqSource = req.eqSource;
+    }, { notFoundMessage: '会话或结果不存在' })
+      .then(() => sendResponse({ ok: true }))
+      .catch(err => sendResponse({ ok: false, error: err?.message || String(err) }));
     return true;
   }
   if (req?.action === 'restoreSession') {

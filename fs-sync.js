@@ -12,6 +12,7 @@ import {
   queryPermissionOnly, ensureSubdir,
   readJson, writeJson, fileExists, removeFile,
 } from './fs-manager.js';
+import { storageQueue } from './src/app/storage/storage-queue.js';
 
 const APP_VERSION = '2.4.1';
 const FILE_VERSION = 1;
@@ -141,7 +142,12 @@ export async function pullFromFolder() {
 
     const appliedKeys = Object.keys(updates);
     if (appliedKeys.length > 0) {
-      await chrome.storage.local.set(updates);
+      // 逐个 key 走 storage 队列：既避免和正在进行的读改写交错，
+      // 又不至于让一次恢复把整个存储锁住。
+      await Promise.all(appliedKeys.map(key => storageQueue.run(
+        key,
+        () => chrome.storage.local.set({ [key]: updates[key] }),
+      )));
     }
 
     lastSyncAt = Date.now();
