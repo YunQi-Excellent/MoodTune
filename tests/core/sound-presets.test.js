@@ -3,10 +3,14 @@ import { EQ_FREQUENCIES } from '../../src/core/constants.js';
 import { defaultEffects, hasActiveEffects } from '../../src/core/effects.js';
 import {
   BUILTIN_SOUND_PRESETS,
+  SOUND_PRESET_GROUPS,
   cloneSoundPreset,
+  featuredSoundPresets,
   findBuiltinSoundPreset,
+  groupSoundPresets,
   soundSignature,
 } from '../../src/core/sound-presets.js';
+import { normalizeEffects } from '../../src/core/effects.js';
 
 describe('BUILTIN_SOUND_PRESETS', () => {
   it('id 唯一且字段完整', () => {
@@ -39,14 +43,36 @@ describe('BUILTIN_SOUND_PRESETS', () => {
     }
   });
 
-  it('flat 是平坦的，且当前这批是纯 EQ（效果全旁路）', () => {
+  it('flat 是平坦的，且不挂任何效果', () => {
     const flat = BUILTIN_SOUND_PRESETS.find(preset => preset.id === 'flat');
     expect(flat.eq.bands.every(band => band.gainDb === 0)).toBe(true);
     expect(flat.eq.preampDb).toBe(0);
+    expect(hasActiveEffects(flat.effects)).toBe(false);
+    expect(flat.effects).toEqual(defaultEffects());
+  });
 
+  it('每条效果链都是归一化过的合法结构', () => {
     for (const preset of BUILTIN_SOUND_PRESETS) {
-      expect(hasActiveEffects(preset.effects), preset.id).toBe(false);
-      expect(preset.effects).toEqual(defaultEffects());
+      expect(preset.effects, preset.id).toEqual(normalizeEffects(preset.effects));
+    }
+  });
+
+  it('空间与动态类预设真的打开了对应的效果块', () => {
+    const club = BUILTIN_SOUND_PRESETS.find(preset => preset.id === 'club');
+    expect(club.effects.width.enabled).toBe(true);
+    expect(club.effects.width.amount).toBeGreaterThan(1);
+    expect(club.effects.dynamics.enabled).toBe(true);
+    expect(hasActiveEffects(club.effects)).toBe(true);
+
+    const bass = BUILTIN_SOUND_PRESETS.find(preset => preset.id === 'bass-boost');
+    expect(bass.effects.dynamics.enabled).toBe(true);
+    expect(bass.effects.dynamics.drive).toBeGreaterThan(0);
+  });
+
+  it('开效果的预设都留了前级余量', () => {
+    for (const preset of BUILTIN_SOUND_PRESETS) {
+      if (!hasActiveEffects(preset.effects)) continue;
+      expect(preset.eq.preampDb, preset.id).toBeLessThan(0);
     }
   });
 
@@ -54,6 +80,25 @@ describe('BUILTIN_SOUND_PRESETS', () => {
     const bass = BUILTIN_SOUND_PRESETS.find(preset => preset.id === 'bass-boost');
     expect(bass.eq.preampDb).toBeLessThan(0);
     expect(bass.eq.bands[0].gainDb).toBeGreaterThan(0);
+  });
+});
+
+describe('分组与卡片露出', () => {
+  it('每个预设都落在已声明的分组里，分组覆盖全部预设', () => {
+    for (const preset of BUILTIN_SOUND_PRESETS) {
+      expect(SOUND_PRESET_GROUPS, preset.id).toContain(preset.group);
+    }
+
+    const grouped = groupSoundPresets().flatMap(section => section.presets);
+    expect(grouped).toHaveLength(BUILTIN_SOUND_PRESETS.length);
+  });
+
+  it('卡片露出的是 featured 子集，且包含原声', () => {
+    const featured = featuredSoundPresets();
+    expect(featured.length).toBeGreaterThan(0);
+    expect(featured.length).toBeLessThan(BUILTIN_SOUND_PRESETS.length);
+    expect(featured.map(preset => preset.id)).toContain('flat');
+    expect(featured.every(preset => preset.featured === true)).toBe(true);
   });
 });
 

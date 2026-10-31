@@ -1,5 +1,5 @@
 import { EQ_FREQUENCIES } from '../../core/constants.js';
-import { normalizeEffects } from '../../core/effects.js';
+import { hasActiveEffects, normalizeEffects } from '../../core/effects.js';
 import { dbToGain } from '../../core/eq.js';
 
 /**
@@ -289,15 +289,22 @@ function buildReverb(ctx) {
   };
 }
 
-/** 激励曲线：drive=0 时保持线性，避免无谓染色。 */
+/**
+ * 激励曲线：软饱和与干声按比例混合。
+ *
+ * 纯 tanh 会让 vocal 也带上明显失真，所以这里只掺一部分谐波（最多 60%），
+ * drive 小时几乎听不出染色，但低频的「体积感」会变实。
+ */
 function createDriveCurve(drive) {
   const samples = 1024;
   const curve = new Float32Array(samples);
-  const k = 1 + drive * 7;
+  const k = 1 + drive * 6;
   const norm = Math.tanh(k);
+  const mix = Math.min(0.6, drive * 0.6);
   for (let i = 0; i < samples; i++) {
     const x = (i / (samples - 1)) * 2 - 1;
-    curve[i] = Math.tanh(k * x) / norm;
+    const saturated = Math.tanh(k * x) / norm;
+    curve[i] = (1 - mix) * x + mix * saturated;
   }
   return curve;
 }
@@ -335,6 +342,35 @@ function buildDynamics(ctx) {
         shaper.curve = params.drive > 0 ? createDriveCurve(params.drive) : null;
       }
     },
+  };
+}
+
+/**
+ * 兜底限幅器：只在有任何一个效果块工作时接入。
+ *
+ * 低频提升 + 动态补偿 + 混响叠加很容易把峰值顶过 0 dBFS，
+ * 与其让每个预设自己算 headroom，不如在末端放一个只在超标时才动手的限幅。
+ * 阈值 -1 dB、20:1，正常节目电平不会触发。
+ */
+function buildLimiter(ctx) {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const compressor = ctx.createDynamicsCompressor();
+
+  compressor.threshold.value = -1;
+  compressor.knee.value = 0;
+  compressor.ratio.value = 20;
+  compressor.attack.value = 0.003;
+  compressor.release.value = 0.25;
+
+  input.connect(compressor);
+  compressor.connect(output);
+
+  return {
+    input,
+    output,
+    nodes: { compressor },
+    update() {},
   };
 }
 
@@ -400,6 +436,15 @@ export function createAudioGraph({ ctx, source, destination, now = () => ctx.cur
     blocks[name] = block;
   }
 
+  let limiter = null;
+  try {
+    limiter = createBlock(ctx, () => buildLimiter(ctx));
+    tail.connect(limiter.input);
+    tail = limiter.output;
+  } catch (error) {
+    console.warn('[AudioGraph] 跳过限幅器：', error?.message || error);
+  }
+
   tail.connect(destination);
 
   function applyEq(eq) {
@@ -429,6 +474,8 @@ export function createAudioGraph({ ctx, source, destination, now = () => ctx.cur
       // 旁路的块不更新参数：省掉建 IR 之类的开销，重新启用时再算一次
       if (active) block.inner.update(params, when);
     }
+
+    limiter?.setActive(master && hasActiveEffects(normalized), when);
   }
 
   return {
@@ -436,6 +483,7 @@ export function createAudioGraph({ ctx, source, destination, now = () => ctx.cur
     preamp,
     filters,
     blocks,
+    limiter,
     applyEq,
     applyEffects,
   };

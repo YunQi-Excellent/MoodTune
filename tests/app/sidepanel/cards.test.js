@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BUILTIN_SOUND_PRESETS } from '../../../src/core/sound-presets.js';
+import { featuredSoundPresets } from '../../../src/core/sound-presets.js';
 import { renderAgentBody, renderEqCard, renderPlanCard } from '../../../src/app/sidepanel/cards.js';
 import { EQ_FREQUENCIES } from '../../../src/core/constants.js';
 
@@ -94,11 +94,11 @@ describe('renderEqCard', () => {
     expect(renderEqCard({ id: 'm', eq: {} })).not.toContain('stats-line yellow');
   });
 
-  it('渲染全部音效 chips，并高亮与当前 EQ 一致的那个', () => {
-    const flat = BUILTIN_SOUND_PRESETS.find(preset => preset.id === 'flat');
+  it('渲染常用音效 chips，并高亮与当前 EQ 一致的那个', () => {
+    const flat = featuredSoundPresets().find(preset => preset.id === 'flat');
     const html = renderEqCard({ id: 'm', eq: flat.eq, effects: flat.effects });
 
-    expect(html.match(/data-sound-id=/g)).toHaveLength(BUILTIN_SOUND_PRESETS.length);
+    expect(html.match(/data-sound-id=/g)).toHaveLength(featuredSoundPresets().length);
     expect(html).toContain('data-action="apply-sound-chip"');
     expect(html).toContain('sound-chip active');
   });
@@ -111,13 +111,14 @@ describe('renderEqCard', () => {
 
     const html = renderEqCard({ id: 'm', eq });
 
-    expect(html.match(/data-sound-id=/g)).toHaveLength(BUILTIN_SOUND_PRESETS.length);
+    expect(html.match(/data-sound-id=/g)).toHaveLength(featuredSoundPresets().length);
     expect(html).not.toContain('sound-chip active');
   });
 
   it('带一个进入音效库的入口', () => {
     const html = renderEqCard({ id: 'm', eq: {} });
     expect(html).toContain('data-action="open-sound-library"');
+    expect(html).toContain('全部音效');
   });
 
   it('缺 EQ 时按平坦渲染，不抛错', () => {

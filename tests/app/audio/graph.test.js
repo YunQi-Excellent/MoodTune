@@ -116,6 +116,42 @@ describe('applyEffects 默认必须完全旁路', () => {
   });
 });
 
+describe('安全限幅器', () => {
+  it('默认（全旁路）时限幅器不接入', () => {
+    const { graph } = setup();
+
+    graph.applyEffects(defaultEffects());
+
+    expect(graph.limiter.dryGain.gain.value).toBe(1);
+    expect(graph.limiter.wetGain.gain.value).toBe(0);
+  });
+
+  it('有任何一个效果块启用时接入，参数是只压峰值的设定', () => {
+    const { graph } = setup();
+    const effects = defaultEffects();
+    effects.width.enabled = true;
+
+    graph.applyEffects(effects);
+
+    expect(graph.limiter.dryGain.gain.value).toBe(0);
+    expect(graph.limiter.wetGain.gain.value).toBe(1);
+    expect(graph.limiter.inner.nodes.compressor.threshold.value).toBe(-1);
+    expect(graph.limiter.inner.nodes.compressor.ratio.value).toBe(20);
+  });
+
+  it('总开关关闭时限幅器跟着退出', () => {
+    const { graph } = setup();
+    const effects = defaultEffects();
+    effects.enabled = false;
+    effects.width.enabled = true;
+
+    graph.applyEffects(effects);
+
+    expect(graph.limiter.dryGain.gain.value).toBe(1);
+    expect(graph.limiter.wetGain.gain.value).toBe(0);
+  });
+});
+
 describe('applyEffects 参数映射', () => {
   it('宽度：M/S 侧路增益等于 amount', () => {
     const { graph } = setup();

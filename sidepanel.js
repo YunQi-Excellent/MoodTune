@@ -1,7 +1,11 @@
 import { EQ_FREQUENCIES } from './src/core/constants.js';
 import { defaultEq } from './src/core/eq.js';
 import { createId } from './src/core/ids.js';
-import { BUILTIN_SOUND_PRESETS, soundSignature } from './src/core/sound-presets.js';
+import {
+  BUILTIN_SOUND_PRESETS,
+  groupSoundPresets,
+  soundSignature,
+} from './src/core/sound-presets.js';
 
 import { $, $$ } from './src/app/dom.js';
 import { escapeHtml, fmtClock, fmtDate } from './src/app/sidepanel/format.js';
@@ -451,16 +455,30 @@ function renderLibraryBody() {
 
   if (state.libraryTab === 'sound') {
     const active = currentSoundPreset();
-    const cards = BUILTIN_SOUND_PRESETS.map((preset) => {
-      const isActive = active?.id === preset.id;
+
+    const sections = groupSoundPresets().map((section) => {
+      const cards = section.presets.map((preset) => {
+        const isActive = active?.id === preset.id;
+        const usesEffects = Object.values(preset.effects || {}).some(
+          block => block && block.enabled === true,
+        );
+        const meta = `${preset.tagline || ''}${usesEffects ? ' · 含效果链' : ''}`;
+        return `
+          <button class="sound-card${isActive ? ' active' : ''}"
+                  data-sound-id="${escapeHtml(preset.id)}"
+                  data-accent="${escapeHtml(preset.accent || 'slate')}">
+            <span class="sound-name">${escapeHtml(preset.name)}</span>
+            <span class="sound-tag">${escapeHtml(meta)}</span>
+            ${isActive ? '<span class="sound-state">使用中</span>' : ''}
+          </button>
+        `;
+      }).join('');
+
       return `
-        <button class="sound-card${isActive ? ' active' : ''}"
-                data-sound-id="${escapeHtml(preset.id)}"
-                data-accent="${escapeHtml(preset.accent || 'slate')}">
-          <span class="sound-name">${escapeHtml(preset.name)}</span>
-          <span class="sound-tag">${escapeHtml(preset.tagline || '')}</span>
-          ${isActive ? '<span class="sound-state">使用中</span>' : ''}
-        </button>
+        <div class="sound-group">
+          <div class="sound-group-title">${escapeHtml(section.group)}</div>
+          <div class="sound-grid">${cards}</div>
+        </div>
       `;
     }).join('');
 
@@ -472,7 +490,7 @@ function renderLibraryBody() {
 
     body.innerHTML = `
       <div class="sound-intro">点一下就整套切换：EQ + 空间效果。切换后仍然可以拖动 EQ 滑杆微调。</div>
-      <div class="sound-grid">${cards}</div>
+      ${sections}
       ${hint ? `<div class="sound-hint">${hint}</div>` : ''}
     `;
     return;

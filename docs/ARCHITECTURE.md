@@ -78,13 +78,14 @@ sidepanel ──applySoundPreset──────▶ background ──▶ EQ_SE
 音频链在 [src/app/audio/graph.js](../src/app/audio/graph.js)：
 
 ```text
-source → preamp → EQ(10 段 peaking) → 宽度 → 串音 → 早期反射 → 混响 → 动态 → destination
+source → preamp → EQ(10 段 peaking) → 宽度 → 串音 → 早期反射 → 混响 → 动态 → 限幅 → destination
 ```
 
 - **每个效果块都是干/湿并行的可旁路模块**，默认全关；全关时等价于只有 EQ，听感与旧版本一致（有测试兜底）。
 - 参数归一化在 [src/core/effects.js](../src/core/effects.js)，图只管把参数落到节点上，并用 `setTargetAtTime` 平滑，避免切换预设爆音。
 - 混响用**程序合成的 IR**（指数衰减噪声），不打包音频文件；IR 按参数缓存。
 - 某个块在当前环境缺 API 时只跳过该块，不影响播放与 EQ。
+- 末端限幅器是兜底，不面向用户配置：只要还有任何一个块在工作就接入（阈值 -1 dB、20:1），全旁路时一并退出。
 
 「音效」是比 EQ 高一层的东西：一条音效 = `{ eq, effects }`。内置音效在 [src/core/sound-presets.js](../src/core/sound-presets.js)，用户保存的预设复用 `eqPresets` 表（可带 `effects`）。套用后用户仍然拖 EQ 滑杆，改的只是链里的 EQ 节点，所以「预设之上自由调整」不需要额外机制；UI 用状态指纹判断是否还等于预设，不等就显示「已调整」。
 

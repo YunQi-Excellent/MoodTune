@@ -1,5 +1,5 @@
 import { EQ_FREQUENCIES } from '../../core/constants.js';
-import { BUILTIN_SOUND_PRESETS, soundSignature } from '../../core/sound-presets.js';
+import { featuredSoundPresets, soundSignature } from '../../core/sound-presets.js';
 import { escapeHtml, fmtDuration } from './format.js';
 
 /**
@@ -109,12 +109,13 @@ export function renderEqCard(message) {
 
   // 音效 chips：先挑一套预设，下面的滑杆立刻变成那套值，再手动微调
   const cardSignature = soundSignature({ eq, effects: message.effects });
-  const chipsHtml = BUILTIN_SOUND_PRESETS.map((preset) => {
+  const chipsHtml = featuredSoundPresets().map((preset) => {
     const active = soundSignature({ eq: preset.eq, effects: preset.effects }) === cardSignature;
     return `<button class="sound-chip${active ? ' active' : ''}" data-action="apply-sound-chip"
               data-sound-id="${escapeHtml(preset.id)}" data-msg-id="${message.id}"
               title="${escapeHtml(preset.tagline || '')}">${escapeHtml(preset.name)}</button>`;
-  }).join('');
+  }).join('') + `
+    <button class="sound-chip more" data-action="open-sound-library" data-msg-id="${message.id}">全部音效 ›</button>`;
 
   return `
     <div class="eq-header">

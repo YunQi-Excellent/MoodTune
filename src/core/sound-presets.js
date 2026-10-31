@@ -4,14 +4,21 @@ import { defaultEffects, normalizeEffects } from './effects.js';
 /**
  * 内置音效（预设）。
  *
- * 一个「音效」= 一套 EQ 快照 + 一条效果链。当前这一批是**纯 EQ**能表达的音色，
- * 所以 effects 全是默认（全旁路）；环绕 / 前置 / 混响类会在效果块落地后补进来。
+ * 一个「音效」= 一套 EQ 快照 + 一条效果链。
+ * - 基础音色：纯 EQ 就能表达的音色
+ * - 空间与动态：需要宽度 / 串音 / 反射 / 混响 / 压缩的听感
  *
  * 命名刻意避开品牌词（DTS、臻享、全景 Sound 等），用通用描述：
- * 音色对得上，法律上干净。
+ * 听感对得上，法律上干净。
  *
  * 这些对象是只读模板，应用前请用 cloneSoundPreset。
  */
+
+/** 音效库里分组的展示顺序。 */
+export const SOUND_PRESET_GROUPS = Object.freeze([
+  '基础音色',
+  '空间与动态',
+]);
 
 function makeEq(gains, preampDb = 0) {
   return {
@@ -24,6 +31,19 @@ function makeEq(gains, preampDb = 0) {
   };
 }
 
+/** 在默认（全旁路）效果链上只打开需要的块，避免每处都写全字段。 */
+function makeEffects({ width, crossfeed, spatial, reverb, dynamics } = {}) {
+  const base = defaultEffects();
+  return normalizeEffects({
+    ...base,
+    width: { ...base.width, ...width },
+    crossfeed: { ...base.crossfeed, ...crossfeed },
+    spatial: { ...base.spatial, ...spatial },
+    reverb: { ...base.reverb, ...reverb },
+    dynamics: { ...base.dynamics, ...dynamics },
+  });
+}
+
 /** 频率顺序：31 62 125 250 500 1k 2k 4k 8k 16k */
 export const BUILTIN_SOUND_PRESETS = Object.freeze([
   {
@@ -31,49 +51,81 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     name: '原声',
     tagline: '不添色，回到原始混音',
     accent: 'slate',
+    group: '基础音色',
+    featured: true,
     eq: makeEq([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-    effects: defaultEffects(),
+    effects: makeEffects(),
   },
   {
     id: 'clean-vocal',
     name: '清澈人声',
     tagline: '人声靠前，齿音收敛',
     accent: 'sky',
+    group: '基础音色',
+    featured: true,
     eq: makeEq([-4, -3, -2, -3, 0, 2, 3, 2, -2, -3]),
-    effects: defaultEffects(),
+    effects: makeEffects(),
   },
   {
     id: 'bass-boost',
     name: '低频增强',
     tagline: '下潜更深，量感更足',
     accent: 'violet',
-    // 低频抬得多，前级留出余量，避免削波
-    eq: makeEq([6, 5, 3, 0, -1, -1, 0, 0, 1, 0], -4),
-    effects: defaultEffects(),
+    group: '基础音色',
+    featured: true,
+    // 低频抬得多，前级留余量；再用轻微谐波激励把「量」变成听感上的「下潜」
+    eq: makeEq([6, 5, 3, 0, -1, -1, 0, 0, 1, 0], -5),
+    effects: makeEffects({
+      dynamics: {
+        enabled: true, thresholdDb: -18, ratio: 3, makeupDb: 1, drive: 0.25,
+      },
+    }),
   },
   {
     id: 'warm',
     name: '温暖宽松',
     tagline: '低频柔和，高频不刺',
     accent: 'amber',
+    group: '基础音色',
+    featured: false,
     eq: makeEq([2, 2, 1, 0, -1, 0, 1, 0, -2, -3], -1),
-    effects: defaultEffects(),
+    effects: makeEffects(),
   },
   {
     id: 'car-audio',
     name: '车载补偿',
     tagline: '补回车厢吃掉的低频与高频',
     accent: 'teal',
+    group: '基础音色',
+    featured: false,
     eq: makeEq([4, 3, 1, -2, -1, 1, 2, 1, 2, 3], -2),
-    effects: defaultEffects(),
+    effects: makeEffects(),
   },
   {
     id: 'oriental',
     name: '东方韵味',
     tagline: '中频饱满，泛音通透',
     accent: 'rose',
+    group: '基础音色',
+    featured: false,
     eq: makeEq([-2, -1, 0, 1, 2, 2, 3, 2, 0, -1]),
-    effects: defaultEffects(),
+    effects: makeEffects(),
+  },
+  {
+    id: 'club',
+    name: '超嗨 DJ',
+    tagline: '低频紧实，声场更宽',
+    accent: 'fuchsia',
+    group: '空间与动态',
+    featured: true,
+    // 低频与补偿增益都不小，靠末端限幅兜底
+    eq: makeEq([4, 4, 2, 0, -1, -1, 0, 1, 2, 1], -4),
+    effects: makeEffects({
+      width: { enabled: true, amount: 1.35 },
+      dynamics: {
+        enabled: true, thresholdDb: -22, ratio: 5, makeupDb: 3, drive: 0.15,
+      },
+    }),
   },
 ]);
 
@@ -84,6 +136,24 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
 export function findBuiltinSoundPreset(id) {
   if (!id) return null;
   return BUILTIN_SOUND_PRESETS.find(preset => preset.id === id) || null;
+}
+
+/** 调音卡片上直接露出一排（其余在音效库里）。 */
+export function featuredSoundPresets() {
+  return BUILTIN_SOUND_PRESETS.filter(preset => preset.featured === true);
+}
+
+/**
+ * 按分组切好，给音效库渲染用。空分组会被丢掉。
+ * @returns {{ group: string, presets: object[] }[]}
+ */
+export function groupSoundPresets() {
+  return SOUND_PRESET_GROUPS
+    .map(group => ({
+      group,
+      presets: BUILTIN_SOUND_PRESETS.filter(preset => preset.group === group),
+    }))
+    .filter(section => section.presets.length > 0);
 }
 
 /** 深拷贝一份预设，避免把共享模板直接交给播放器或存储。 */
