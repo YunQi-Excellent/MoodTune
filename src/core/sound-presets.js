@@ -230,6 +230,16 @@ export function cloneSoundPreset(preset) {
 }
 
 /**
+ * 按「当前 EQ + 效果链」找到对应的预设；对不上返回 null（表示已被手动调整）。
+ * @param {{ eq?: object, effects?: object } | null} state
+ * @returns {object | null}
+ */
+export function findPresetByState(state) {
+  const signature = soundSignature(state);
+  return BUILTIN_SOUND_PRESETS.find(preset => soundSignature(preset) === signature) || null;
+}
+
+/**
  * 用「当前状态」的指纹判断某个音效是否正在生效。
  * 这样用户手动拧过滑块后，UI 能自动从「使用中」变成「已调整」。
  *

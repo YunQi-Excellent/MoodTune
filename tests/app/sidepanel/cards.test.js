@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderAgentBody, renderEqCard, renderPlanCard } from '../../../src/app/sidepanel/cards.js';
 import { EQ_FREQUENCIES } from '../../../src/core/constants.js';
+import { BUILTIN_SOUND_PRESETS, findBuiltinSoundPreset } from '../../../src/core/sound-presets.js';
 
 const picks = [
   { id: 1, name: '雨天', artists: 'A', album: 'X', durationMs: 225_000, cover: 'https://img/1.jpg', reason: '很搭' },
@@ -93,13 +94,27 @@ describe('renderEqCard', () => {
     expect(renderEqCard({ id: 'm', eq: {} })).not.toContain('stats-line yellow');
   });
 
-  it('不再内嵌音效 chips，只留一个「预设效果」入口', () => {
-    const html = renderEqCard({ id: 'm', eq: {} });
+  it('预设面板默认收起，标题直接写出当前音效', () => {
+    const flat = findBuiltinSoundPreset('flat');
+    const html = renderEqCard({ id: 'm', eq: flat.eq, effects: flat.effects });
 
-    expect(html).not.toContain('data-sound-id=');
-    expect(html).not.toContain('apply-sound-chip');
-    expect(html).toContain('data-action="open-sound-library"');
-    expect(html).toContain('预设效果');
+    expect(html).toContain('data-action="toggle-eq-presets"');
+    expect(html).toContain('<div class="eq-presets" hidden>');
+    expect(html).toContain('预设效果 · 原声');
+    expect(html.match(/data-sound-id=/g)).toHaveLength(BUILTIN_SOUND_PRESETS.length);
+    expect(html).toContain('eq-preset-chip active');
+  });
+
+  it('EQ 对不上任何预设时标题显示自定义、也没有勾选', () => {
+    const eq = {
+      preampDb: 0,
+      bands: EQ_FREQUENCIES.map(frequencyHz => ({ frequencyHz, gainDb: 1 })),
+    };
+
+    const html = renderEqCard({ id: 'm', eq });
+
+    expect(html).toContain('预设效果 · 自定义');
+    expect(html).not.toContain('eq-preset-chip active');
   });
 
   it('缺 EQ 时按平坦渲染，不抛错', () => {

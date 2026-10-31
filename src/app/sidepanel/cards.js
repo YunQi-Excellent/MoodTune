@@ -1,4 +1,5 @@
 import { EQ_FREQUENCIES } from '../../core/constants.js';
+import { findPresetByState, groupSoundPresets } from '../../core/sound-presets.js';
 import { escapeHtml, fmtDuration } from './format.js';
 
 /**
@@ -106,16 +107,39 @@ export function renderEqCard(message) {
     `;
   }).join('');
 
+  // 预设面板默认收起：标题就写着当前是哪套（或「自定义」），
+  // 点开是卡片内联的分组列表，不弹抽屉，选完立刻同步下面的滑杆。
+  const activePreset = findPresetByState({ eq, effects: message.effects });
+  const presetLabel = activePreset ? activePreset.name : '自定义';
+
+  const presetGroups = groupSoundPresets().map(section => `
+    <div class="eq-presets-group">
+      <div class="eq-presets-title">${escapeHtml(section.group)}</div>
+      <div class="eq-presets-grid">
+        ${section.presets.map((preset) => {
+          const isActive = activePreset?.id === preset.id;
+          return `<button class="eq-preset-chip${isActive ? ' active' : ''}"
+                    data-action="apply-sound-chip" data-sound-id="${escapeHtml(preset.id)}"
+                    data-msg-id="${message.id}"
+                    title="${escapeHtml(preset.tagline || '')}">${escapeHtml(preset.name)}</button>`;
+        }).join('')}
+      </div>
+    </div>
+  `).join('');
+
   return `
     <div class="eq-header">
       <div class="title">
         <span>🎛 声学 EQ 调校</span>
       </div>
       <div class="eq-header-right">
-        <button class="eq-link" data-action="open-sound-library" data-msg-id="${message.id}">预设效果 ›</button>
+        <button class="eq-link" data-action="toggle-eq-presets" data-msg-id="${message.id}" aria-expanded="false">
+          <span class="eq-link-label">预设效果 · ${escapeHtml(presetLabel)}</span><span class="caret">▾</span>
+        </button>
         <span class="badge yellow">${preamp > 0 ? '+' : ''}${preamp} dB 前级</span>
       </div>
     </div>
+    <div class="eq-presets" hidden>${presetGroups}</div>
     ${reason ? `<div class="stats-line yellow">💡 ${escapeHtml(reason)}</div>` : ''}
     <div style="margin: 8px 0 10px;">
       ${preampHtml}

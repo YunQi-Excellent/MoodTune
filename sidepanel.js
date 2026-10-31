@@ -5,8 +5,8 @@ import { createId } from './src/core/ids.js';
 import {
   BUILTIN_SOUND_PRESETS,
   DEFAULT_SOUND_PRESET_ID,
+  findPresetByState,
   groupSoundPresets,
-  soundSignature,
 } from './src/core/sound-presets.js';
 
 import { $, $$ } from './src/app/dom.js';
@@ -446,10 +446,7 @@ async function refreshLibrary() {
 /** 当前生效的音效（用状态指纹匹配，手动拧过滑块会自动失去「使用中」）。 */
 function currentSoundPreset() {
   if (!state.currentEq) return null;
-  const signature = soundSignature({ eq: state.currentEq, effects: state.currentEffects });
-  return BUILTIN_SOUND_PRESETS.find(
-    preset => soundSignature({ eq: preset.eq, effects: preset.effects }) === signature,
-  ) || null;
+  return findPresetByState({ eq: state.currentEq, effects: state.currentEffects });
 }
 
 function renderLibraryBody() {
@@ -575,6 +572,7 @@ async function applySoundPresetCard(card) {
   }
 
   pushLog('ok', `已切换到「${preset.name}」${describeChainSuffix(response.effects)}`);
+  syncEqCards();
   renderLibraryBody();
 }
 
@@ -871,6 +869,79 @@ function syncEqCardInputs(msgId, eq) {
   if (badge) badge.textContent = `${preamp > 0 ? '+' : ''}${preamp} dB 前级`;
 }
 
+/* ================= 调音卡片 ↔ 音效 ================= */
+/**
+ * 把「当前 EQ + 效果链」回写到当前会话里的每一张调音卡片。
+ *
+ * 不管用户是在卡片里选的音效、在音效库里选的、还是点了重置，
+ * 都走这一个出口，避免出现「声音变了但滑杆没动」。
+ */
+function syncEqCards() {
+  const messages = state.currentSession?.messages || [];
+  for (const message of messages) {
+    if (message.kind !== 'eq-card') continue;
+    message.eq = state.currentEq;
+    message.effects = state.currentEffects;
+    syncEqCardInputs(message.id, message.eq);
+    updateEqPresetChips(message.id, message);
+  }
+}
+
+/** 刷新卡片里预设 chips 的选中态与标题上的当前预设名。 */
+function updateEqPresetChips(msgId, message) {
+  const node = state.messageNodes.get(msgId);
+  if (!node) return;
+
+  const active = findPresetByState({
+    eq: message?.eq,
+    effects: message?.effects || state.currentEffects,
+  });
+
+  for (const chip of node.querySelectorAll('[data-sound-id]')) {
+    const preset = BUILTIN_SOUND_PRESETS.find(item => item.id === chip.getAttribute('data-sound-id'));
+    chip.classList.toggle('active', Boolean(preset) && preset.id === active?.id);
+  }
+
+  const label = node.querySelector('.eq-link-label');
+  if (label) label.textContent = `预设效果 · ${active ? active.name : '自定义'}`;
+}
+
+/** 点预设 chip：整套写进播放器，滑杆与标题同步刷新，然后收起面板。 */
+async function applySoundChip(msg, msgId, btn) {
+  const preset = BUILTIN_SOUND_PRESETS.find(item => item.id === btn.getAttribute('data-sound-id'));
+  if (!preset) return;
+
+  btn.disabled = true;
+  const response = await sendMsg({ action: 'applySoundPreset', id: preset.id });
+  btn.disabled = false;
+
+  if (!response?.ok) {
+    pushLog('err', '切换音效失败：' + (response?.error || '未知'));
+    return;
+  }
+
+  state.currentEq = response.eq || preset.eq;
+  state.currentEffects = response.effects || preset.effects;
+
+  if (state.currentSession) {
+    sendMsg({ action: 'cartSetEq', sessionId: state.currentSession.id, eq: state.currentEq }).catch(() => {});
+  }
+
+  syncEqCards();
+
+  const node = state.messageNodes.get(msgId);
+  const panel = node?.querySelector('.eq-presets');
+  const toggle = node?.querySelector('[data-action="toggle-eq-presets"]');
+  if (panel) panel.hidden = true;
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', 'false');
+    const caret = toggle.querySelector('.caret');
+    if (caret) caret.textContent = '▾';
+  }
+
+  pushLog('ok', `已切换到「${preset.name}」${describeChainSuffix(state.currentEffects)}`);
+}
+
 $('#chatStream').addEventListener('click', async e => {
   const toggle = e.target.closest('.thinking-toggle');
   if (toggle) {
@@ -883,14 +954,25 @@ $('#chatStream').addEventListener('click', async e => {
   if (!btn) return;
   const action = btn.getAttribute('data-action');
 
-  if (action === 'open-sound-library') {
-    openLibraryDrawer('sound');
+  const msgId = btn.getAttribute('data-msg-id');
+  if (action === 'toggle-eq-presets') {
+    const node = state.messageNodes.get(msgId);
+    const panel = node?.querySelector('.eq-presets');
+    if (!panel) return;
+    panel.hidden = !panel.hidden;
+    btn.setAttribute('aria-expanded', String(!panel.hidden));
+    const caret = btn.querySelector('.caret');
+    if (caret) caret.textContent = panel.hidden ? '▾' : '▴';
     return;
   }
 
-  const msgId = btn.getAttribute('data-msg-id');
   const msg = (state.currentSession?.messages || []).find(x => x.id === msgId);
   if (!msg) return;
+
+  if (action === 'apply-sound-chip') {
+    await applySoundChip(msg, msgId, btn);
+    return;
+  }
 
   if (action === 'add-to-cart') {
     const picks = msg.picks || [];
@@ -934,12 +1016,10 @@ $('#chatStream').addEventListener('click', async e => {
     const effects = response?.ok ? (response.effects || defaultEffects()) : defaultEffects();
     if (!response?.ok) pushLog('err', '重置失败：' + (response?.error || '未知'));
 
-    msg.eq = eq;
-    msg.effects = effects;
     state.currentEq = eq;
     state.currentEffects = effects;
+    syncEqCards();
 
-    syncEqCardInputs(msgId, eq);
     if (state.currentSession) {
       await sendMsg({ action: 'cartSetEq', sessionId: state.currentSession.id, eq });
     }
