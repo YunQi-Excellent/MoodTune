@@ -1,9 +1,10 @@
 import { EQ_FREQUENCIES } from './src/core/constants.js';
-import { describeEffects } from './src/core/effects.js';
+import { defaultEffects, describeEffects } from './src/core/effects.js';
 import { defaultEq } from './src/core/eq.js';
 import { createId } from './src/core/ids.js';
 import {
   BUILTIN_SOUND_PRESETS,
+  DEFAULT_SOUND_PRESET_ID,
   groupSoundPresets,
   soundSignature,
 } from './src/core/sound-presets.js';
@@ -868,55 +869,6 @@ function syncEqCardInputs(msgId, eq) {
   if (badge) badge.textContent = `${preamp > 0 ? '+' : ''}${preamp} dB 前级`;
 }
 
-/** 根据卡片上的 EQ 刷新 chips 的「选中」状态。 */
-function highlightSoundChips(msgId, message) {
-  const node = state.messageNodes.get(msgId);
-  if (!node) return;
-
-  const current = soundSignature({
-    eq: message?.eq,
-    effects: message?.effects || state.currentEffects,
-  });
-
-  for (const chip of node.querySelectorAll('[data-sound-id]')) {
-    const preset = BUILTIN_SOUND_PRESETS.find(item => item.id === chip.getAttribute('data-sound-id'));
-    if (!preset) continue;
-    chip.classList.toggle(
-      'active',
-      soundSignature({ eq: preset.eq, effects: preset.effects }) === current,
-    );
-  }
-}
-
-/** 点音效 chip：整套写进这张卡片（滑杆跟着变），并同步到播放器。 */
-async function applySoundChip(msg, msgId, btn) {
-  const preset = BUILTIN_SOUND_PRESETS.find(item => item.id === btn.getAttribute('data-sound-id'));
-  if (!preset) return;
-
-  btn.disabled = true;
-  const response = await sendMsg({ action: 'applySoundPreset', id: preset.id });
-  btn.disabled = false;
-
-  if (!response?.ok) {
-    pushLog('err', '切换音效失败：' + (response?.error || '未知'));
-    return;
-  }
-
-  const eq = response.eq || preset.eq;
-  msg.eq = eq;
-  msg.effects = response.effects || preset.effects;
-  state.currentEq = eq;
-  state.currentEffects = msg.effects;
-
-  syncEqCardInputs(msgId, eq);
-  highlightSoundChips(msgId, msg);
-
-  if (state.currentSession) {
-    sendMsg({ action: 'cartSetEq', sessionId: state.currentSession.id, eq }).catch(() => {});
-  }
-  pushLog('ok', `已切换到「${preset.name}」${describeChainSuffix(msg.effects)}`);
-}
-
 $('#chatStream').addEventListener('click', async e => {
   const toggle = e.target.closest('.thinking-toggle');
   if (toggle) {
@@ -937,11 +889,6 @@ $('#chatStream').addEventListener('click', async e => {
   const msgId = btn.getAttribute('data-msg-id');
   const msg = (state.currentSession?.messages || []).find(x => x.id === msgId);
   if (!msg) return;
-
-  if (action === 'apply-sound-chip') {
-    await applySoundChip(msg, msgId, btn);
-    return;
-  }
 
   if (action === 'add-to-cart') {
     const picks = msg.picks || [];
@@ -975,28 +922,25 @@ $('#chatStream').addEventListener('click', async e => {
   }
 
   if (action === 'reset-eq-card') {
-    const node = state.messageNodes.get(msgId);
-    if (!node) return;
-    const preampInput = node.querySelector(`[data-eq-band="preamp"]`);
-    if (preampInput) preampInput.value = 0;
-    const preampVal = preampInput?.parentElement.querySelector('.value');
-    if (preampVal) preampVal.textContent = '0 dB';
-    for (const f of EQ_FREQUENCIES) {
-      const input = node.querySelector(`[data-eq-band="${f}"]`);
-      if (input) input.value = 0;
-      const valEl = input?.parentElement.querySelector('.value');
-      if (valEl) valEl.textContent = '0 dB';
-    }
-    const eq = defaultEq();
+    // 重置 = 回到「原声」：EQ 清零，效果链也要一并退出，
+    // 否则空间处理会留在链上，听感和 UI 都会对不上。
+    btn.disabled = true;
+    const response = await sendMsg({ action: 'applySoundPreset', id: DEFAULT_SOUND_PRESET_ID });
+    btn.disabled = false;
+
+    const eq = response?.ok ? (response.eq || defaultEq()) : defaultEq();
+    const effects = response?.ok ? (response.effects || defaultEffects()) : defaultEffects();
+    if (!response?.ok) pushLog('err', '重置失败：' + (response?.error || '未知'));
+
     msg.eq = eq;
+    msg.effects = effects;
     state.currentEq = eq;
-    highlightSoundChips(msgId, msg);
-    sendMsg({ action: 'setEqDirect', eq }).catch(() => {});
+    state.currentEffects = effects;
+
+    syncEqCardInputs(msgId, eq);
     if (state.currentSession) {
       await sendMsg({ action: 'cartSetEq', sessionId: state.currentSession.id, eq });
     }
-    const eqHeaderBadge = node.querySelector('.eq-header .badge:last-child');
-    if (eqHeaderBadge) eqHeaderBadge.textContent = '0 dB 前级';
     return;
   }
 
@@ -1049,7 +993,6 @@ $('#chatStream').addEventListener('input', async e => {
   msg.eq = eq;
   // 让「我的内容 → 音效」能立刻反映出手动调整
   state.currentEq = eq;
-  highlightSoundChips(msgId, msg);
 
   if (band === 'preamp') {
     const eqHeaderBadge = node.querySelector('.eq-header .badge:last-child');

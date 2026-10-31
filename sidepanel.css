@@ -519,41 +519,20 @@ html.dark .track-item .reason { color: var(--brand-400); }
   margin-bottom: 8px;
 }
 .eq-header .title { font-weight: 700; font-size: 13px; color: var(--fg-0); }
-.sound-chips {
-  display: flex; flex-wrap: wrap; gap: 6px;
-  margin: 0 0 8px;
-}
-.sound-chip {
-  padding: 3px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--soft-bg);
-  color: var(--fg-1);
-  font: inherit; font-size: 11px; font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.sound-chip:hover {
-  border-color: var(--brand-500);
-  color: var(--brand-600);
-}
-.sound-chip.active {
-  background: var(--brand-50);
-  border-color: var(--brand-500);
-  color: var(--brand-600);
-}
-html.dark .sound-chip.active {
-  background: var(--brand-100);
-  color: var(--brand-400);
-}
+
 .eq-header-right { display: flex; align-items: center; gap: 8px; }
 .eq-link {
-  background: transparent; border: 0; padding: 0;
-  color: var(--brand-600); cursor: pointer;
-  font-size: 11px; font-weight: 600;
+  padding: 3px 10px;
+  border: 1px solid var(--brand-ring);
+  border-radius: 999px;
+  background: var(--brand-50);
+  color: var(--brand-600);
+  cursor: pointer;
+  font: inherit; font-size: 11px; font-weight: 600;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
-.eq-link:hover { text-decoration: underline; }
-html.dark .eq-link { color: var(--brand-400); }
+.eq-link:hover { background: var(--brand-100); border-color: var(--brand-500); }
+html.dark .eq-link { color: var(--brand-400); background: var(--brand-100); }
 .eq-slider {
   display: grid; grid-template-columns: 60px 1fr 52px;
   gap: 6px; align-items: center;

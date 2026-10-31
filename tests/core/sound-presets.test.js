@@ -5,7 +5,6 @@ import {
   BUILTIN_SOUND_PRESETS,
   SOUND_PRESET_GROUPS,
   cloneSoundPreset,
-  featuredSoundPresets,
   findBuiltinSoundPreset,
   groupSoundPresets,
   soundSignature,
@@ -119,11 +118,6 @@ describe('空间与动态类的处理组合', () => {
     }
   });
 
-  it('空间类预设都出现在卡片 chips 里（前两个）', () => {
-    const ids = featuredSoundPresets().map(preset => preset.id);
-    expect(ids).toContain('front');
-    expect(ids).toContain('wide');
-  });
 });
 
 describe('分组与卡片露出', () => {
@@ -136,13 +130,6 @@ describe('分组与卡片露出', () => {
     expect(grouped).toHaveLength(BUILTIN_SOUND_PRESETS.length);
   });
 
-  it('卡片露出的是 featured 子集，且包含原声', () => {
-    const featured = featuredSoundPresets();
-    expect(featured.length).toBeGreaterThan(0);
-    expect(featured.length).toBeLessThan(BUILTIN_SOUND_PRESETS.length);
-    expect(featured.map(preset => preset.id)).toContain('flat');
-    expect(featured.every(preset => preset.featured === true)).toBe(true);
-  });
 });
 
 describe('findBuiltinSoundPreset', () => {

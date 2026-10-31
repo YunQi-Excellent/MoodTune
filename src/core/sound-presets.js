@@ -14,6 +14,9 @@ import { defaultEffects, normalizeEffects } from './effects.js';
  * 这些对象是只读模板，应用前请用 cloneSoundPreset。
  */
 
+/** 「原声」既是音效，也是「重置一切染色」的默认目标。 */
+export const DEFAULT_SOUND_PRESET_ID = 'flat';
+
 /** 音效库里分组的展示顺序。 */
 export const SOUND_PRESET_GROUPS = Object.freeze([
   '基础音色',
@@ -52,7 +55,6 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     tagline: '不添色，回到原始混音',
     accent: 'slate',
     group: '基础音色',
-    featured: true,
     eq: makeEq([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
     effects: makeEffects(),
   },
@@ -62,7 +64,6 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     tagline: '人声靠前，齿音收敛',
     accent: 'sky',
     group: '基础音色',
-    featured: true,
     eq: makeEq([-4, -3, -2, -3, 0, 2, 3, 2, -2, -3]),
     effects: makeEffects(),
   },
@@ -72,7 +73,6 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     tagline: '下潜更深，量感更足',
     accent: 'violet',
     group: '基础音色',
-    featured: true,
     // 低频抬得多，前级留余量；再用轻微谐波激励把「量」变成听感上的「下潜」
     eq: makeEq([6, 5, 3, 0, -1, -1, 0, 0, 1, 0], -5),
     effects: makeEffects({
@@ -87,7 +87,6 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     tagline: '低频柔和，高频不刺',
     accent: 'amber',
     group: '基础音色',
-    featured: false,
     eq: makeEq([2, 2, 1, 0, -1, 0, 1, 0, -2, -3], -1),
     effects: makeEffects(),
   },
@@ -97,7 +96,6 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     tagline: '补回车厢吃掉的低频与高频',
     accent: 'teal',
     group: '基础音色',
-    featured: false,
     eq: makeEq([4, 3, 1, -2, -1, 1, 2, 1, 2, 3], -2),
     effects: makeEffects(),
   },
@@ -107,7 +105,6 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     tagline: '中频饱满，泛音通透',
     accent: 'rose',
     group: '基础音色',
-    featured: false,
     eq: makeEq([-2, -1, 0, 1, 2, 2, 3, 2, 0, -1]),
     effects: makeEffects(),
   },
@@ -117,7 +114,6 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     tagline: '低频紧实，声场更宽',
     accent: 'fuchsia',
     group: '空间与动态',
-    featured: true,
     // 低频与补偿增益都不小，靠末端限幅兜底
     eq: makeEq([4, 4, 2, 0, -1, -1, 0, 1, 2, 1], -4),
     effects: makeEffects({
@@ -133,7 +129,6 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     tagline: '声像从脑中挪到额前，久听不累',
     accent: 'indigo',
     group: '空间与动态',
-    featured: true,
     // 串音把对侧信号低通后混回来，是「在前方」的关键；EQ 只负责提亮
     eq: makeEq([-3, -2, -1, 0, 0, 1, 2, 2, 0, -1], -2),
     effects: makeEffects({
@@ -149,7 +144,6 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     tagline: '声场拉开，两侧有反射',
     accent: 'emerald',
     group: '空间与动态',
-    featured: true,
     eq: makeEq([1, 1, 0, 0, 0, 0, 1, 1, 1, 0], -3),
     effects: makeEffects({
       width: { enabled: true, amount: 1.8 },
@@ -166,7 +160,6 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     tagline: '像在小型现场，尾巴更自然',
     accent: 'orange',
     group: '空间与动态',
-    featured: false,
     eq: makeEq([0, 1, 0, -1, 0, 1, 1, 0, 0, 0], -3),
     effects: makeEffects({
       width: { enabled: true, amount: 1.3 },
@@ -185,7 +178,6 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     tagline: '包围感强，适合戴耳机听整张专辑',
     accent: 'pink',
     group: '空间与动态',
-    featured: false,
     eq: makeEq([1, 1, 0, 0, 0, 0, 0, 1, 1, 0], -4),
     effects: makeEffects({
       width: { enabled: true, amount: 1.7 },
@@ -208,11 +200,6 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
 export function findBuiltinSoundPreset(id) {
   if (!id) return null;
   return BUILTIN_SOUND_PRESETS.find(preset => preset.id === id) || null;
-}
-
-/** 调音卡片上直接露出一排（其余在音效库里）。 */
-export function featuredSoundPresets() {
-  return BUILTIN_SOUND_PRESETS.filter(preset => preset.featured === true);
 }
 
 /**
