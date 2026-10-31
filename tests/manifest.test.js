@@ -30,4 +30,13 @@ describe('manifest.json', () => {
       expect(existsSync(resolve(root, entry)), `缺少入口文件：${entry}`).toBe(true);
     }
   });
+
+  it('页面脚本以 ES module 方式加载', () => {
+    for (const page of ['sidepanel.html', 'offscreen.html', 'options.html']) {
+      const html = readFileSync(resolve(root, page), 'utf8');
+      expect(html, `${page} 缺少 type="module" 脚本`).toMatch(
+        /<script[^>]*type="module"[^>]*src="[^"]+\.js"/,
+      );
+    }
+  });
 });

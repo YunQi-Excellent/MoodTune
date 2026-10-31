@@ -2,17 +2,10 @@
 // 同时承载 Web Audio EQ 处理
 // 注意：不直接访问 chrome.storage（某些环境不可用），持久化通过 background 中继
 
-const audioEl = document.getElementById('offscreenAudio');
+import { EQ_FREQUENCIES, PLAYER_DEFAULTS } from './src/core/constants.js';
+import { dbToGain, defaultEq, isEqValid, normalizeEq } from './src/core/eq.js';
 
-/* =====================================================
-   常量
-   ===================================================== */
-const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
-const DEFAULT_EQ = {
-  enabled: true,
-  preampDb: 0,
-  bands: EQ_FREQUENCIES.map(f => ({ frequencyHz: f, gainDb: 0 }))
-};
+const audioEl = document.getElementById('offscreenAudio');
 
 /* =====================================================
    状态
@@ -24,7 +17,7 @@ const state = {
   playing: false,
   currentTime: 0,
   duration: 0,
-  volume: 0.8,
+  volume: PLAYER_DEFAULTS.volume,
   loading: false,
   eq: null
 };
@@ -50,39 +43,6 @@ async function sendToBackground(type, payload) {
     console.warn(`[Offscreen] 发送 ${type} 给 background 失败：`, e?.message || e);
     return null;
   }
-}
-
-/* =====================================================
-   EQ 工具函数
-   ===================================================== */
-function isEqValid(eq) {
-  if (!eq || typeof eq !== 'object') return false;
-  if (!Array.isArray(eq.bands)) return false;
-  return eq.bands.length === EQ_FREQUENCIES.length;
-}
-
-function normalizeEq(eq) {
-  const bands = EQ_FREQUENCIES.map(f => {
-    const found = (eq.bands || []).find(b => Number(b.frequencyHz) === f);
-    const raw = found ? Number(found.gainDb) : 0;
-    const g = Number.isFinite(raw) ? Math.max(-12, Math.min(12, Math.round(raw))) : 0;
-    return { frequencyHz: f, gainDb: g };
-  });
-  const preRaw = Number(eq.preampDb);
-  const preampDb = Number.isFinite(preRaw) ? Math.max(-12, Math.min(3, Math.round(preRaw))) : 0;
-  return {
-    enabled: eq.enabled !== false,
-    preampDb,
-    bands
-  };
-}
-
-function defaultEq() {
-  return normalizeEq(DEFAULT_EQ);
-}
-
-function dbToGain(db) {
-  return Math.pow(10, db / 20);
 }
 
 /* =====================================================

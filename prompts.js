@@ -2,6 +2,8 @@
 // 提示词集中管理
 // =====================================================
 
+import { EQ_FREQUENCIES } from './src/core/constants.js';
+
 // ----- 路由提示词（新增）-----
 export const ROUTER_SYSTEM = `你是 MoodTune 的意图路由器。用户输入一句话，你判断它属于哪种意图，并输出一行 JSON。
 
@@ -95,7 +97,7 @@ JSON 结构：
 export const EQ_TUNER_SYSTEM = `你是专业的音频调音师。用户会描述想要的听感，你要输出一套 10 段 EQ 参数。
 
 固定 10 个频段（必须全部出现，每个只出现一次）：
-31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000
+${EQ_FREQUENCIES.join(', ')}
 
 每个频段增益范围：-12 到 +12（单位 dB，整数）
 前级（preampDb）范围：-12 到 +3（整数 dB）
@@ -127,26 +129,4 @@ export const EQ_TUNER_SYSTEM = `你是专业的音频调音师。用户会描述
 - 只输出 JSON，用 \`\`\`json 代码块包裹
 - 先给 1-2 句简短分析，再输出 JSON`;
 
-// ----- 全局配置（保持原有）-----
-export const INTENT_CONFIG = {
-  maxQueries: 8,
-  maxTargetCount: 20,
-  coarseFilterMultiplier: 8,
-  coarseFilterMin: 60,
-  coarseFilterMax: 120,
-  rerankReasonMaxLen: 60,
-};
-
-export const EQ_CONFIG = {
-  frequencies: [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000],
-  minGainDb: -12,
-  maxGainDb: 12,
-  minPreampDb: -12,
-  maxPreampDb: 3,
-  presetsLimit: 50,
-};
-
-export const SESSION_CONFIG = {
-  maxSessions: 30,
-  maxMessagesPerSession: 100,
-};
+// 全局配置已迁移到 ./src/core/constants.js

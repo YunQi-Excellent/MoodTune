@@ -3,10 +3,20 @@ import {
   PLANNER_SYSTEM,
   RERANK_SYSTEM,
   EQ_TUNER_SYSTEM,
-  INTENT_CONFIG,
-  EQ_CONFIG,
-  SESSION_CONFIG,
 } from './prompts.js';
+
+import {
+  DEFAULT_PROVIDER_ID,
+  EQ_CONFIG,
+  INTENT_CONFIG,
+  PLAYER_DEFAULTS,
+  SESSION_CONFIG,
+} from './src/core/constants.js';
+
+import { defaultEq, normalizeEq } from './src/core/eq.js';
+import { createId } from './src/core/ids.js';
+import { extractJson } from './src/core/json.js';
+import { sanitizeTrack } from './src/core/track.js';
 
 import {
   getFsStatus,
@@ -38,22 +48,14 @@ async function getSavedPlaylists() {
   const r = await chrome.storage.local.get(SAVED_PLAYLISTS_KEY);
   return Array.isArray(r[SAVED_PLAYLISTS_KEY]) ? r[SAVED_PLAYLISTS_KEY] : [];
 }
-function sanitizeSong(s) {
-  return {
-    id: s.id,
-    name: String(s.name || '').slice(0, 300),
-    artists: String(s.artists || '').slice(0, 200),
-    album: String(s.album || '').slice(0, 300),
-    durationMs: Number.isFinite(s.durationMs) ? s.durationMs : 0,
-    cover: String(s.cover || '').slice(0, 500),
-    link: String(s.link || '').slice(0, 500),
-  };
+function sanitizeSong(song) {
+  return sanitizeTrack(song, { provider: DEFAULT_PROVIDER_ID });
 }
 async function savePlaylist({ name, songs, source }) {
   if (!Array.isArray(songs) || songs.length === 0) throw new Error('播放列表为空');
   const list = await getSavedPlaylists();
   const item = {
-    id: 'pl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+    id: createId('pl'),
     name: String(name || '未命名').trim().slice(0, 60) || '未命名',
     songs: songs.map(sanitizeSong),
     createdAt: Date.now(),
@@ -93,29 +95,13 @@ async function getEqPresets() {
   const r = await chrome.storage.local.get(EQ_PRESETS_KEY);
   return Array.isArray(r[EQ_PRESETS_KEY]) ? r[EQ_PRESETS_KEY] : [];
 }
-function normalizeEqForStore(eq) {
-  const freqs = EQ_CONFIG.frequencies;
-  const bands = freqs.map(f => {
-    const found = (eq.bands || []).find(b => Number(b.frequencyHz) === f);
-    const raw = found ? Number(found.gainDb) : 0;
-    const g = Number.isFinite(raw)
-      ? Math.max(EQ_CONFIG.minGainDb, Math.min(EQ_CONFIG.maxGainDb, Math.round(raw)))
-      : 0;
-    return { frequencyHz: f, gainDb: g };
-  });
-  const preRaw = Number(eq.preampDb);
-  const preampDb = Number.isFinite(preRaw)
-    ? Math.max(EQ_CONFIG.minPreampDb, Math.min(EQ_CONFIG.maxPreampDb, Math.round(preRaw)))
-    : 0;
-  return { enabled: eq.enabled !== false, preampDb, bands };
-}
 async function saveEqPreset({ name, eq, source }) {
   if (!eq) throw new Error('没有可保存的调音');
   const list = await getEqPresets();
   const item = {
-    id: 'eq-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+    id: createId('eq'),
     name: String(name || '未命名').trim().slice(0, 60) || '未命名',
-    eq: normalizeEqForStore(eq),
+    eq: normalizeEq(eq),
     createdAt: Date.now(),
     source: source || 'manual',
   };
@@ -166,7 +152,7 @@ async function getCurrentSession() {
 async function createSession(name) {
   const sessions = await getSessions();
   const session = {
-    id: 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+    id: createId('sess'),
     name: String(name || '新会话').trim().slice(0, 40) || '新会话',
     createdAt: Date.now(),
     messages: [],
@@ -790,15 +776,6 @@ async function callLLMStream(messages, onChunk, signal) {
   }
   return full;
 }
-function extractJson(text) {
-  let t = String(text).trim();
-  const fence = t.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fence) t = fence[1].trim();
-  const start = t.indexOf('{');
-  const end = t.lastIndexOf('}');
-  if (start >= 0 && end > start) t = t.slice(start, end + 1);
-  try { return JSON.parse(t); } catch { return null; }
-}
 function makeStreamPusher(sessionId) {
   let buffer = '';
   let timer = null;
@@ -838,7 +815,7 @@ async function tuneEqWithLLM({ userNeed, currentEq, onChunk, signal }) {
   const raw = await callLLMStream(messages, onChunk || (() => {}), signal);
   const parsed = extractJson(raw);
   if (!parsed || !parsed.eq) throw new Error('大模型没有给出有效的 EQ JSON');
-  const normalized = normalizeEqForStore(parsed.eq);
+  const normalized = normalizeEq(parsed.eq);
   return { eq: normalized, reason: String(parsed.reason || '').slice(0, 200) };
 }
 
@@ -1117,7 +1094,7 @@ async function runChatRequest({ userNeed, sessionId, userMessageId }) {
   currentIntentAbort = abort;
   const signal = abort.signal;
 
-  const newMsgId = () => 'msg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+  const newMsgId = () => createId('msg');
 
   try {
     await appendSessionMessage(session.id, {
@@ -1177,11 +1154,7 @@ async function runChatRequest({ userNeed, sessionId, userMessageId }) {
       }).catch(() => {});
       const sessionsFresh = await getSessions();
       const fresh = sessionsFresh.find(s => s.id === session.id) || session;
-      const currentEq = fresh.cartEq || fresh.result?.eq || {
-        enabled: true,
-        preampDb: 0,
-        bands: EQ_CONFIG.frequencies.map(f => ({ frequencyHz: f, gainDb: 0 })),
-      };
+      const currentEq = fresh.cartEq || fresh.result?.eq || defaultEq();
       await appendSessionMessage(session.id, {
         id: newMsgId(), role: 'agent', kind: 'eq-card',
         eq: currentEq, reason: null, at: Date.now(),
@@ -1464,7 +1437,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         const r = await chrome.storage.local.get(['playerVolume', 'currentEq']);
         sendResponse({
           ok: true,
-          volume: typeof r.playerVolume === 'number' ? r.playerVolume : 0.8,
+          volume: typeof r.playerVolume === 'number' ? r.playerVolume : PLAYER_DEFAULTS.volume,
           eq: r.currentEq || null,
         });
       } catch (e) { sendResponse({ ok: false, error: e?.message || String(e) }); }
@@ -1755,12 +1728,8 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       try {
         let session = await getCurrentSession();
         if (!session) session = await createSession('新会话');
-        const currentEq = session.cartEq || session.result?.eq || {
-          enabled: true,
-          preampDb: 0,
-          bands: EQ_CONFIG.frequencies.map(f => ({ frequencyHz: f, gainDb: 0 })),
-        };
-        const msgId = 'msg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+        const currentEq = session.cartEq || session.result?.eq || defaultEq();
+        const msgId = createId('msg');
         await appendSessionMessage(session.id, {
           id: msgId, role: 'agent', kind: 'eq-card',
           eq: currentEq, reason: null, at: Date.now(),

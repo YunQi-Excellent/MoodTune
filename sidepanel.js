@@ -1,3 +1,7 @@
+import { EQ_FREQUENCIES } from './src/core/constants.js';
+import { defaultEq } from './src/core/eq.js';
+import { createId } from './src/core/ids.js';
+
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 
@@ -30,7 +34,7 @@ function fmtDate(ts) {
   return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 function randId(p = 'id') {
-  return p + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  return createId(p);
 }
 async function sendMsg(msg) {
   try { return await chrome.runtime.sendMessage(msg); }
@@ -44,8 +48,6 @@ async function copyText(text) {
     ta.select(); document.execCommand('copy'); ta.remove();
   }
 }
-
-const EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 
 /* ================= 状态 ================= */
 const state = {
@@ -807,7 +809,7 @@ function renderEqCard(m) {
     </div>
   `;
 
-  const bandsHtml = EQ_FREQS.map(f => {
+  const bandsHtml = EQ_FREQUENCIES.map(f => {
     const b = (eq.bands || []).find(x => Number(x.frequencyHz) === f);
     const v = b ? Number(b.gainDb) : 0;
     const label = f >= 1000 ? `${f/1000} kHz` : `${f} Hz`;
@@ -895,13 +897,13 @@ $('#chatStream').addEventListener('click', async e => {
     if (preampInput) preampInput.value = 0;
     const preampVal = preampInput?.parentElement.querySelector('.value');
     if (preampVal) preampVal.textContent = '0 dB';
-    for (const f of EQ_FREQS) {
+    for (const f of EQ_FREQUENCIES) {
       const input = node.querySelector(`[data-eq-band="${f}"]`);
       if (input) input.value = 0;
       const valEl = input?.parentElement.querySelector('.value');
       if (valEl) valEl.textContent = '0 dB';
     }
-    const eq = { enabled: true, preampDb: 0, bands: EQ_FREQS.map(f => ({ frequencyHz: f, gainDb: 0 })) };
+    const eq = defaultEq();
     msg.eq = eq;
     sendMsg({ action: 'setEqDirect', eq }).catch(() => {});
     if (state.currentSession) {
@@ -953,7 +955,7 @@ $('#chatStream').addEventListener('input', async e => {
 
   const preampInput = node.querySelector(`[data-eq-band="preamp"]`);
   const preampDb = preampInput ? Number(preampInput.value) : 0;
-  const bands = EQ_FREQS.map(f => {
+  const bands = EQ_FREQUENCIES.map(f => {
     const i = node.querySelector(`[data-eq-band="${f}"]`);
     return { frequencyHz: f, gainDb: i ? Number(i.value) : 0 };
   });
