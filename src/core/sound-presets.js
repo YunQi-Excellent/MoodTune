@@ -137,9 +137,9 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     // 串音把对侧信号低通后混回来，是「在前方」的关键；EQ 只负责提亮
     eq: makeEq([-3, -2, -1, 0, 0, 1, 2, 2, 0, -1], -2),
     effects: makeEffects({
-      crossfeed: { enabled: true, amount: 0.55, cutoffHz: 700, delayMs: 0.3 },
+      crossfeed: { enabled: true, amount: 0.7, cutoffHz: 700, delayMs: 0.3 },
       reverb: {
-        enabled: true, wet: 0.1, durationMs: 900, decay: 3.2, preDelayMs: 8,
+        enabled: true, wet: 0.16, durationMs: 1000, decay: 3.2, preDelayMs: 8,
       },
     }),
   },
@@ -150,12 +150,13 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     accent: 'emerald',
     group: '空间与动态',
     featured: true,
-    eq: makeEq([1, 1, 0, 0, 0, 0, 1, 1, 1, 0], -2),
+    eq: makeEq([1, 1, 0, 0, 0, 0, 1, 1, 1, 0], -3),
     effects: makeEffects({
-      width: { enabled: true, amount: 1.55 },
-      spatial: { enabled: true, amount: 0.55 },
+      width: { enabled: true, amount: 1.8 },
+      spatial: { enabled: true, amount: 0.65 },
+      // 混响时长按「衰减到 -60dB 约需 duration/decay 秒」换算，实际尾巴 ~1.4s
       reverb: {
-        enabled: true, wet: 0.22, durationMs: 2000, decay: 2.4, preDelayMs: 20,
+        enabled: true, wet: 0.38, durationMs: 3000, decay: 2.2, preDelayMs: 20,
       },
     }),
   },
@@ -166,12 +167,12 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     accent: 'orange',
     group: '空间与动态',
     featured: false,
-    eq: makeEq([0, 1, 0, -1, 0, 1, 1, 0, 0, 0], -1),
+    eq: makeEq([0, 1, 0, -1, 0, 1, 1, 0, 0, 0], -3),
     effects: makeEffects({
-      width: { enabled: true, amount: 1.15 },
-      spatial: { enabled: true, amount: 0.4 },
+      width: { enabled: true, amount: 1.3 },
+      spatial: { enabled: true, amount: 0.55 },
       reverb: {
-        enabled: true, wet: 0.3, durationMs: 2400, decay: 2.2, preDelayMs: 28,
+        enabled: true, wet: 0.45, durationMs: 3200, decay: 2, preDelayMs: 30,
       },
       dynamics: {
         enabled: true, thresholdDb: -20, ratio: 3, makeupDb: 1.5, drive: 0,
@@ -185,13 +186,13 @@ export const BUILTIN_SOUND_PRESETS = Object.freeze([
     accent: 'pink',
     group: '空间与动态',
     featured: false,
-    eq: makeEq([1, 1, 0, 0, 0, 0, 0, 1, 1, 0], -3),
+    eq: makeEq([1, 1, 0, 0, 0, 0, 0, 1, 1, 0], -4),
     effects: makeEffects({
-      width: { enabled: true, amount: 1.3 },
-      crossfeed: { enabled: true, amount: 0.35, cutoffHz: 800, delayMs: 0.25 },
-      spatial: { enabled: true, amount: 0.7 },
+      width: { enabled: true, amount: 1.7 },
+      crossfeed: { enabled: true, amount: 0.4, cutoffHz: 800, delayMs: 0.25 },
+      spatial: { enabled: true, amount: 0.8 },
       reverb: {
-        enabled: true, wet: 0.18, durationMs: 1400, decay: 2.8, preDelayMs: 15,
+        enabled: true, wet: 0.35, durationMs: 2600, decay: 2.4, preDelayMs: 15,
       },
       dynamics: {
         enabled: true, thresholdDb: -22, ratio: 2.5, makeupDb: 1, drive: 0,

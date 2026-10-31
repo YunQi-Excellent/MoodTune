@@ -213,6 +213,30 @@ describe('applyEffects 参数映射', () => {
     expect(nodes.convolver.buffer.numberOfChannels).toBe(2);
   });
 
+  it('混响 IR 的尾巴够长：不会几百毫秒就断', () => {
+    const { graph } = setup();
+    const effects = defaultEffects();
+    effects.reverb.enabled = true;
+    effects.reverb.durationMs = 2000;
+    effects.reverb.decay = 2.4;
+
+    graph.applyEffects(effects);
+
+    const data = graph.blocks.reverb.inner.nodes.convolver.buffer.getChannelData(0);
+    const windowRms = (from, to) => {
+      let sum = 0;
+      for (let i = from; i < to; i++) sum += data[i] * data[i];
+      return Math.sqrt(sum / (to - from));
+    };
+    const head = windowRms(0, 2000);
+    const quarter = windowRms(Math.floor(data.length * 0.25), Math.floor(data.length * 0.25) + 2000);
+    const tail = windowRms(data.length - 2000, data.length);
+
+    const db = value => 20 * Math.log10(value / head);
+    expect(db(quarter)).toBeGreaterThan(-40);
+    expect(db(tail)).toBeLessThan(-55);
+  });
+
   it('混响 IR 按参数缓存，不会每次重算', () => {
     const { graph } = setup();
     const effects = defaultEffects();

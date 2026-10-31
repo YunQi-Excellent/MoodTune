@@ -225,9 +225,11 @@ function createImpulseResponse(ctx, { durationMs, decay }) {
       // 固定种子的 LCG：左右声道噪声不同，卷积后不会把声像收窄
       seed = (seed * 1664525 + 1013904223) % 0x100000000;
       const noise = (seed / 0x100000000) * 2 - 1;
-      lowpassed = lowpassed * 0.62 + noise * 0.38;
+      // 一阶低通（约 4 kHz）：再暗就成糊，再亮会发嘶
+      lowpassed = lowpassed * 0.45 + noise * 0.55;
       const progress = i / length;
-      data[i] = lowpassed * Math.exp(-decay * 6 * progress);
+      // 衰减到 -60 dB 大约用 durationMs / decay 秒：decay 越大尾巴越短
+      data[i] = lowpassed * Math.exp(-decay * 6.9 * progress);
     }
   }
 

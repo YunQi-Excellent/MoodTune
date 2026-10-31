@@ -1247,6 +1247,17 @@ html.dark .sound-state { color: var(--brand-400); }
 .sound-card[data-accent="pink"] { --sound-accent: #f472b6; }
 
 /* 音效库的分组小标题 */
+.sound-chain {
+  font-size: 11px;
+  color: var(--brand-600);
+  background: var(--brand-50);
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+html.dark .sound-chain { color: var(--brand-400); background: var(--brand-100); }
+
 .sound-group { margin-bottom: 14px; }
 .sound-group-title {
   font-size: 11px;

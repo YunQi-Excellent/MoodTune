@@ -3,6 +3,7 @@ import {
   EFFECT_BLOCKS,
   activeEffectBlocks,
   defaultEffects,
+  describeEffects,
   hasActiveEffects,
   isEffectsValid,
   normalizeEffects,
@@ -110,5 +111,41 @@ describe('hasActiveEffects / activeEffectBlocks', () => {
     fx.enabled = false;
     expect(hasActiveEffects(fx)).toBe(false);
     expect(activeEffectBlocks(fx)).toEqual([]);
+  });
+});
+
+describe('describeEffects', () => {
+  it('全旁路时没有任何描述', () => {
+    expect(describeEffects(defaultEffects())).toEqual([]);
+    expect(describeEffects(undefined)).toEqual([]);
+  });
+
+  it('把启用的块翻成带数值的短语', () => {
+    const fx = defaultEffects();
+    fx.width.enabled = true;
+    fx.width.amount = 1.8;
+    fx.reverb.enabled = true;
+    fx.reverb.wet = 0.38;
+
+    expect(describeEffects(fx)).toEqual(['加宽 ×1.8', '混响 38%']);
+  });
+
+  it('激励与压缩合并成一条，跨音/反射/串音各占一条', () => {
+    const fx = defaultEffects();
+    fx.crossfeed.enabled = true;
+    fx.crossfeed.amount = 0.7;
+    fx.spatial.enabled = true;
+    fx.spatial.amount = 0.65;
+    fx.dynamics.enabled = true;
+    fx.dynamics.drive = 0.25;
+
+    expect(describeEffects(fx)).toEqual(['串音 70%', '反射 65%', '激励 + 压缩']);
+  });
+
+  it('总开关关闭时一律没有描述', () => {
+    const fx = defaultEffects();
+    fx.enabled = false;
+    fx.width.enabled = true;
+    expect(describeEffects(fx)).toEqual([]);
   });
 });

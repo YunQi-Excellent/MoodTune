@@ -1,4 +1,5 @@
 import { EQ_FREQUENCIES } from './src/core/constants.js';
+import { describeEffects } from './src/core/effects.js';
 import { defaultEq } from './src/core/eq.js';
 import { createId } from './src/core/ids.js';
 import {
@@ -488,8 +489,12 @@ function renderLibraryBody() {
         ? `当前：${escapeHtml(active.name)}`
         : '当前：自定义（在预设基础上手动调过）';
 
+    const chain = describeEffects(state.currentEffects);
+    const chainLabel = chain.length ? chain.join(' · ') : '关闭（只走 EQ）';
+
     body.innerHTML = `
       <div class="sound-intro">点一下就整套切换：EQ + 空间效果。切换后仍然可以拖动 EQ 滑杆微调。</div>
+      <div class="sound-chain">效果链：${escapeHtml(chainLabel)}</div>
       ${sections}
       ${hint ? `<div class="sound-hint">${hint}</div>` : ''}
     `;
@@ -566,8 +571,14 @@ async function applySoundPresetCard(card) {
     await sendMsg({ action: 'cartSetEq', sessionId: state.currentSession.id, eq: response.eq });
   }
 
-  pushLog('ok', `已切换到「${preset.name}」`);
+  pushLog('ok', `已切换到「${preset.name}」${describeChainSuffix(response.effects)}`);
   renderLibraryBody();
+}
+
+/** 日志里补一句效果链，方便确认「到底有没有生效」。 */
+function describeChainSuffix(effects) {
+  const chain = describeEffects(effects || state.currentEffects);
+  return chain.length ? `（${chain.join(' · ')}）` : '（只走 EQ）';
 }
 
 $('#libraryBody').addEventListener('click', async e => {
@@ -903,7 +914,7 @@ async function applySoundChip(msg, msgId, btn) {
   if (state.currentSession) {
     sendMsg({ action: 'cartSetEq', sessionId: state.currentSession.id, eq }).catch(() => {});
   }
-  pushLog('ok', `已切换到「${preset.name}」`);
+  pushLog('ok', `已切换到「${preset.name}」${describeChainSuffix(msg.effects)}`);
 }
 
 $('#chatStream').addEventListener('click', async e => {

@@ -193,3 +193,25 @@ export function activeEffectBlocks(effects) {
   if (!effects || typeof effects !== 'object' || effects.enabled === false) return [];
   return EFFECT_BLOCKS.filter(block => effects[block]?.enabled === true);
 }
+
+/**
+ * 把效果链翻成人话，给 UI 和日志用。
+ * 用户需要能确认「到底有没有生效」，光看音效名是不够的。
+ *
+ * @param {unknown} effects
+ * @returns {string[]} 例如 ['加宽 ×1.8', '反射 65%', '混响 38%']
+ */
+export function describeEffects(effects) {
+  const fx = normalizeEffects(effects);
+  if (fx.enabled === false) return [];
+
+  const parts = [];
+  if (fx.width.enabled) parts.push(`加宽 ×${fx.width.amount}`);
+  if (fx.crossfeed.enabled) parts.push(`串音 ${Math.round(fx.crossfeed.amount * 100)}%`);
+  if (fx.spatial.enabled) parts.push(`反射 ${Math.round(fx.spatial.amount * 100)}%`);
+  if (fx.reverb.enabled) parts.push(`混响 ${Math.round(fx.reverb.wet * 100)}%`);
+  if (fx.dynamics.enabled) {
+    parts.push(fx.dynamics.drive > 0 ? '激励 + 压缩' : '压缩');
+  }
+  return parts;
+}
