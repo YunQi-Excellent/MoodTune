@@ -269,7 +269,7 @@ moodtune/
 ├── sidepanel.html / .js       # 侧边栏
 ├── offscreen.html / .js       # 音频引擎
 ├── options.html / .js         # 设置页
-├── prompts.js                 # 所有 LLM 提示词（集中管理）
+├── src/agent/                 # 提示词、LLM 客户端、检索与对话编排
 ├── fs-manager.js              # File System Access API 封装
 ├── fs-sync.js                 # 本地文件夹双向同步
 └── docs/
@@ -278,7 +278,7 @@ moodtune/
 
 ### 修改提示词
 
-所有 LLM 提示词集中在 `prompts.js`，包括：
+所有 LLM 提示词集中在 `src/agent/prompts.js`，包括：
 
 - `ROUTER_SYSTEM` —— 意图路由
 - `PLANNER_SYSTEM` —— 检索规划

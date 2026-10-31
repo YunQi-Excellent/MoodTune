@@ -1,7 +1,7 @@
 /**
  * 对话入口。
  *
- * chatStart 立刻回包，真正的检索流程在后台跑并通过 CHAT_* 事件推进度，
+ * chatStart 立刻回包，真正的检索流程在 chat agent 里跑并通过 CHAT_* 事件推进度，
  * 所以这里不能 await chat.start，否则侧边栏会等到整个检索结束才收到响应。
  */
 export function createChatHandlers({ chat, sessions, forwardToSidepanel }) {
@@ -14,7 +14,7 @@ export function createChatHandlers({ chat, sessions, forwardToSidepanel }) {
     chatStart: (req) => {
       const userNeed = String(req.userNeed || '').trim();
       if (!userNeed) return { ok: false, error: '内容为空' };
-      chat.abort();
+      // start 内部会中止上一轮，这里不用再 abort
       chat.start({
         userNeed,
         sessionId: req.sessionId,

@@ -20,13 +20,12 @@ describe('chat handlers', () => {
     };
   }
 
-  it('chatStart 先中止上一条，再后台启动并立即回包', () => {
+  it('chatStart 后台启动并立即回包（中止上一轮由 agent 负责）', () => {
     const { handlers, chat } = setup();
 
     const response = handlers.chatStart({ userNeed: ' 深夜写歌 ', sessionId: 'sess-3' });
 
     expect(response).toEqual({ ok: true });
-    expect(chat.abort).toHaveBeenCalledTimes(1);
     expect(chat.start).toHaveBeenCalledWith({
       userNeed: '深夜写歌',
       sessionId: 'sess-3',

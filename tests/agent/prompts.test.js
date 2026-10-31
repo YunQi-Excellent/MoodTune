@@ -5,7 +5,7 @@ import {
   PLANNER_SYSTEM,
   RERANK_SYSTEM,
   ROUTER_SYSTEM,
-} from '../../prompts.js';
+} from '../../src/agent/prompts.js';
 
 describe('EQ 调音提示词', () => {
   it('频段列表来自 core 常量，避免提示词与音频引擎漂移', () => {

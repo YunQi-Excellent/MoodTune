@@ -2,7 +2,7 @@
 // 提示词集中管理
 // =====================================================
 
-import { EQ_FREQUENCIES } from './src/core/constants.js';
+import { EQ_FREQUENCIES } from '../core/constants.js';
 
 // ----- 路由提示词（新增）-----
 export const ROUTER_SYSTEM = `你是 MoodTune 的意图路由器。用户输入一句话，你判断它属于哪种意图，并输出一行 JSON。
