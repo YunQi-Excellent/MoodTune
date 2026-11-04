@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { coreQuery, isLiteralHit, normalizeForMatch } from '../../src/agent/literal.js';
+import { coreQuery, fallbackKeyword, isLiteralHit, normalizeForMatch } from '../../src/agent/literal.js';
 
 describe('normalizeForMatch', () => {
   it('小写并去掉空白与标点', () => {
@@ -23,6 +23,28 @@ describe('coreQuery', () => {
     expect(coreQuery('P4D的op')).toBe('p4d');
     expect(coreQuery('酒神的op')).toBe('酒神');
     expect(coreQuery('P4D 的 OST')).toBe('p4d');
+  });
+});
+
+describe('fallbackKeyword', () => {
+  it('剥掉口语前缀和「中的」，留下能搜的片段', () => {
+    expect(fallbackKeyword('我想听高达SEED中的op')).toBe('高达SEED op');
+    expect(fallbackKeyword('我想听酒神op')).toBe('酒神op');
+    expect(fallbackKeyword('麻烦帮我找一下周杰伦的晴天')).toBe('周杰伦的晴天');
+  });
+
+  it('剥掉氛围描述里的填充尾巴', () => {
+    expect(fallbackKeyword('深夜写代码那种感觉')).toBe('深夜写代码');
+    expect(fallbackKeyword('适合跑步的歌')).toBe('适合跑步');
+  });
+
+  it('不把整句原样留着（整句会被平台切成「我想」）', () => {
+    expect(fallbackKeyword('我想听高达SEED中的op')).not.toContain('我想');
+    expect(fallbackKeyword('我想听')).toBe('');
+  });
+
+  it('本身已经是关键词时原样返回', () => {
+    expect(fallbackKeyword('霓虹下的酒神')).toBe('霓虹下的酒神');
   });
 });
 

@@ -97,6 +97,13 @@ export function renderPlanCard(message, { cartIds = new Set(), showThinking = tr
     `;
   }).join('');
 
+  // 检索词直接摊开给用户看：检索结果不对时，第一眼就能判断是「搜错了」还是「搜到了但排错了」。
+  const queryText = (message.plan?.queries || [])
+    .map(query => query?.keyword)
+    .filter(Boolean)
+    .slice(0, 5)
+    .join(' / ');
+
   return `
     ${thinkingHtml}
     <div class="plan-header">
@@ -106,10 +113,11 @@ export function renderPlanCard(message, { cartIds = new Set(), showThinking = tr
       <span class="badge">${picks.length} 首</span>
     </div>
     <div class="stats-line">
-      <span>候选 ${stats.total || 0} 首 · 精排 ${stats.filtered || 0} 首${stats.direct ? ' · 原文直搜' : ''}${stats.rerankSkipped ? ' · 未精排' : ''}${stats.carried ? ` · 含上轮 ${stats.carried} 首` : ''}${cartIds.size > 0 ? ` · 会话歌单已有 ${cartIds.size} 首` : ''}</span>
+      <span>候选 ${stats.total || 0} 首 · 粗筛 ${stats.filtered || 0} 首${stats.direct ? ' · 原文直搜' : ''}${stats.fallback ? ' · 关键词兜底' : ''}${stats.rerankSkipped ? ' · 未精排' : ''}${stats.carried ? ` · 含上轮 ${stats.carried} 首` : ''}${cartIds.size > 0 ? ` · 会话歌单已有 ${cartIds.size} 首` : ''}</span>
       <button class="link-btn" data-action="toggle-select-all" data-msg-id="${message.id}"
               ${selectableCount > 0 ? '' : 'disabled'}>${selectAllLabel}</button>
     </div>
+    ${queryText ? `<div class="query-line" title="${escapeHtml(queryText)}">检索词：${escapeHtml(queryText)}</div>` : ''}
     <div class="track-list">${tracksHtml || '<div style="color:var(--fg-3);text-align:center;padding:12px;">没有歌曲</div>'}</div>
     <div class="card-actions">
       <button class="btn" data-action="add-to-cart" data-msg-id="${message.id}">🎵 加入歌单</button>

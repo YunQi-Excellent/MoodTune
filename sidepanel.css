@@ -484,6 +484,12 @@ html.dark .badge.yellow {
   border: 1px solid var(--border);
 }
 .stats-line > span { flex: 1; min-width: 0; }
+/* 检索词：结果不对时先看这一行，判断是搜错了词还是排错了序 */
+.query-line {
+  font-size: 10px; color: var(--fg-3);
+  padding: 0 10px; margin: -4px 0 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 /* 统计行右侧的小快捷操作（全选 / 取消全选） */
 .link-btn {
   flex-shrink: 0;

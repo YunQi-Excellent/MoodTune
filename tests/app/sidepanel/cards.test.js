@@ -42,7 +42,7 @@ describe('renderPlanCard', () => {
     );
 
     expect(html).toContain('推荐临时歌单');
-    expect(html).toContain('候选 20 首 · 精排 8 首');
+    expect(html).toContain('候选 20 首 · 粗筛 8 首');
     expect(html).toContain('data-msg-id="msg-1"');
     expect(html.match(/class="track-cb"/g)).toHaveLength(2);
     expect(html.match(/checked/g)).toHaveLength(2);
@@ -55,7 +55,7 @@ describe('renderPlanCard', () => {
       { cartIds: new Set() },
     );
 
-    expect(html).toContain('候选 2 首 · 精排 2 首 · 原文直搜');
+    expect(html).toContain('候选 2 首 · 粗筛 2 首 · 原文直搜');
   });
 
   it('卡片带「全选 / 取消全选」快捷按钮', () => {
@@ -90,6 +90,27 @@ describe('renderPlanCard', () => {
     );
 
     expect(html).toContain('未精排');
+  });
+
+  it('关键词兜底时标出来源，并把检索词摊开', () => {
+    const html = renderPlanCard(
+      {
+        id: 'msg-10',
+        picks,
+        stats: { total: 40, filtered: 40, rerankSkipped: true, fallback: true },
+        plan: { queries: [{ keyword: '高达SEED op' }, { keyword: '高达seed' }] },
+      },
+      { cartIds: new Set() },
+    );
+
+    expect(html).toContain('关键词兜底');
+    expect(html).toContain('class="query-line"');
+    expect(html).toContain('检索词：高达SEED op / 高达seed');
+  });
+
+  it('没有检索词信息时不渲染那一行', () => {
+    const html = renderPlanCard({ id: 'msg-11', picks, stats: {}, plan: { direct: true } }, { cartIds: new Set() });
+    expect(html).not.toContain('query-line');
   });
 
   it('持久化的思考记录可以展开查看，并带耗时', () => {

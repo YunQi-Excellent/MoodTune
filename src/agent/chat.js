@@ -5,7 +5,7 @@ import { createId } from '../core/ids.js';
 import { extractJson } from '../core/json.js';
 import { trackKey } from '../core/track.js';
 import { tuneEq } from './eq-tuner.js';
-import { coreQuery, isLiteralHit, normalizeForMatch } from './literal.js';
+import { coreQuery, fallbackKeyword, isLiteralHit, normalizeForMatch } from './literal.js';
 import {
   coarseFilter,
   dedupByWeight,
@@ -342,9 +342,13 @@ export function createChatAgent({
 
   /**
    * 把「意图 + 规划」的决策整理成可执行的检索计划。
-   * 模型没给 queries / 给了坏 JSON 时，退回「用原话搜一次」，至少不空手而归。
+   * 模型没给 queries / 给了坏 JSON 时，退回「用抽取出来的关键词搜」。
+   *
+   * 注意这里绝对不能退回「用用户原话搜一次」：平台会把 "我想听高达SEED中的op"
+   * 切成「我想」，返回一屏《我想牵着你的手》这种结果，看起来像正常结果，
+   * 其实是垃圾。宁可搜得宽一点，也不能让兜底方案本身跑偏。
    */
-  function buildPlan(decision, userNeed) {
+  function buildPlan(decision, userNeed, extracted = '') {
     const source = decision && decision.mode === 'search' ? decision : {};
     try {
       return normalizePlan({
@@ -354,16 +358,37 @@ export function createChatAgent({
         reasoning: source.reasoning,
       });
     } catch {
-      return normalizePlan({
-        queries: [{
-          tool: 'searchTracks',
-          keyword: String(userNeed || '').trim().slice(0, 40) || '音乐',
-          limit: 30,
-        }],
-        targetCount: 10,
-        reasoning: '模型没有给出检索计划，直接用原话搜一次',
-      });
+      return {
+        ...normalizePlan({
+          queries: fallbackKeywords(userNeed, extracted).map(keyword => ({
+            tool: 'searchTracks',
+            keyword,
+            limit: 20,
+          })),
+          targetCount: 10,
+          reasoning: '模型没有给出检索计划，退回关键词检索',
+        }),
+        fallback: true,
+      };
     }
+  }
+
+  /** 兜底检索词：优先用模型抽出来的词，再补上削掉口语前缀的原话。 */
+  function fallbackKeywords(userNeed, extracted = '') {
+    const keywords = [];
+    const push = (value) => {
+      const text = String(value || '').trim();
+      if (text.length < 2) return;
+      if (keywords.some(item => normalizeForMatch(item) === normalizeForMatch(text))) return;
+      keywords.push(text);
+    };
+
+    push(extracted);
+    const cleaned = fallbackKeyword(userNeed);
+    push(cleaned);
+    push(coreQuery(cleaned));
+    if (keywords.length === 0) push('音乐');
+    return keywords.slice(0, 3);
   }
 
   /**
@@ -469,6 +494,16 @@ export function createChatAgent({
     try {
       const provider = requireProvider();
 
+      // 兜底计划要说明白：用户看到的结果为什么只是「平台相关性顺序」，
+      // 而不是模型规划过的。这条也解释了「为什么这轮不够准」。
+      if (plan.fallback) {
+        const keywords = (plan.queries || []).map(query => query?.keyword).filter(Boolean);
+        const note = `（决策阶段没有给出可用的检索计划，已退回关键词检索：${keywords.join(' / ')}。`
+          + '结果按平台相关性排序，可能不如正常规划精准。）';
+        thinkingText += `${thinkingText.trim() ? '\n\n' : ''}${note}\n\n`;
+        pusher.push(note + '\n\n');
+      }
+
       onProgress?.('execute', `执行 ${plan.queries.length} 个检索动作…`);
       notify('CHAT_THINKING_START', { sessionId, stage: 'execute' });
       currentStage = 'execute';
@@ -501,6 +536,7 @@ export function createChatAgent({
             filtered: 0,
             carried: carried.length,
             added: 0,
+            fallback: Boolean(plan.fallback),
             rerankSkipped: true,
             timedOut,
           },
@@ -532,6 +568,7 @@ export function createChatAgent({
         filtered: filtered.length,
         carried: carried.length,
         added: picks.filter(pick => !carriedIds.has(String(pick.id))).length,
+        fallback: Boolean(plan.fallback),
         ...extra,
       });
 
@@ -702,7 +739,9 @@ export function createChatAgent({
       };
 
       // 三件事并行：抽检索词 + 原文直搜、一次模型调用同时定意图与检索计划。
-      const literalPromise = extractUserQuery(userNeed, signal)
+      // 抽取结果要留着：决策失败时它就是我们唯一靠得住的关键词来源。
+      const extractPromise = extractUserQuery(userNeed, signal).catch(() => '');
+      const literalPromise = extractPromise
         .then(query => (query ? searchLiteral(query, signal) : null))
         .catch(() => null);
 
@@ -933,6 +972,13 @@ export function createChatAgent({
         }
       }
 
+      // 决策没给出可用计划时，兜底关键词优先用抽取阶段的结果；
+      // 抽取最多 6 秒，决策都失败了，这里再等它的成本可以接受。
+      const planKeywords = decision?.mode === 'search'
+        && Array.isArray(decision.queries) && decision.queries.length > 0
+        ? ''
+        : await extractPromise;
+
       const searchResult = await search(
         userNeed,
         signal,
@@ -940,7 +986,7 @@ export function createChatAgent({
         excludeIds,
         {
           deadline,
-          plan: buildPlan(decision, userNeed),
+          plan: buildPlan(decision, userNeed, planKeywords),
           carryPicks: carried,
           // 决策阶段的流式输出已经推给侧边栏了，这里只把它并进最终落库的思考记录。
           priorThinking: decideText,
@@ -959,6 +1005,16 @@ export function createChatAgent({
           kind: 'text',
           text: `这轮没有找到新的歌，上一轮的 ${carried.length} 首还在上面的卡片里。`
             + '可以告诉我具体的歌手/作品名，或者换个方向再试。',
+        });
+        return;
+      }
+
+      if (searchResult.ok && searchResult.picks.length === 0) {
+        // 精排一首都没留下：给一句话，而不是一张空卡片（空卡片既看不出原因也没法点）。
+        await append({
+          role: 'agent',
+          kind: 'text',
+          text: '这次没找到对得上的歌。可以换成歌手名、作品名，或者告诉我更具体的曲风/语言/年代。',
         });
         return;
       }

@@ -102,18 +102,63 @@ describe('createChatAgent 路由', () => {
     expect(notify).toHaveBeenCalledWith('CHAT_THINKING_END', { sessionId: session.id });
   });
 
-  it('决策模型输出坏 JSON 时用原话兜底检索', async () => {
+  it('决策模型输出坏 JSON 时退回关键词兜底，而不是拿整句去搜', async () => {
     const { agent, store, notify } = setup({
       responses: ['不是 JSON', JSON.stringify({ picks: [{ id: '101', reason: '兜底' }] })],
     });
 
-    await agent.start({ userNeed: '随便听听' });
+    await agent.start({ userNeed: '我想听雨天' });
 
     const session = await store.getCurrent();
     const card = session.messages.find(m => m.kind === 'plan-card');
-    expect(card.plan.queries[0]).toMatchObject({ tool: 'searchTracks', keyword: '随便听听' });
+    expect(card.plan.fallback).toBe(true);
+    expect(card.plan.queries[0]).toMatchObject({ tool: 'searchTracks', keyword: '雨天' });
+    // 整句一旦拿去搜，平台会切成「我想」返回一屏无关结果。
+    expect(card.plan.queries.map(q => q.keyword)).not.toContain('我想听雨天');
+    expect(card.stats.fallback).toBe(true);
     // 没有额外一次「规划」调用：坏 JSON 直接走兜底计划。
     expect(notify).toHaveBeenCalledWith('CHAT_PROGRESS', expect.objectContaining({ stage: 'execute' }));
+  });
+
+  it('决策超时/失败时用抽取阶段的关键词兜底，并标出兜底来源', async () => {
+    const llm = {
+      stream: vi.fn(async (messages) => {
+        const system = messages[0]?.content || '';
+        if (system === EXTRACT_SYSTEM) return JSON.stringify({ query: '高达SEED op', specific: true });
+        if (system === DECIDE_SYSTEM) throw new Error('决策超时');
+        if (system === RERANK_SYSTEM) return JSON.stringify({ picks: [{ id: '101', reason: 'OP' }] });
+        return '';
+      }),
+    };
+    const { agent, store } = setup({ llm });
+
+    await agent.start({ userNeed: '我想听高达SEED中的op' });
+
+    const session = await store.getCurrent();
+    const card = session.messages.find(m => m.kind === 'plan-card');
+    expect(card.plan.queries[0]).toMatchObject({ keyword: '高达SEED op' });
+    // 剥掉 op 的核心词也会补一发，平台对短关键词更宽容。
+    expect(card.plan.queries.map(q => q.keyword)).toContain('高达seed');
+    expect(card.plan.queries.map(q => q.keyword)).not.toContain('我想听高达SEED中的op');
+    expect(card.stats.fallback).toBe(true);
+    expect(card.thinking.text).toContain('退回关键词检索');
+  });
+
+  it('精排一首都没留下时给一句说明，而不是空卡片', async () => {
+    const { agent, store } = setup({
+      responses: [
+        decide({ queries: [{ tool: 'searchTracks', keyword: '雨天', limit: 2 }], targetCount: 2 }),
+        JSON.stringify({ picks: [] }),
+      ],
+    });
+
+    await agent.start({ userNeed: '来点雨天的歌' });
+
+    const session = await store.getCurrent();
+    expect(session.messages.some(m => m.kind === 'plan-card')).toBe(false);
+    const last = session.messages[session.messages.length - 1];
+    expect(last).toMatchObject({ kind: 'text' });
+    expect(last.text).toContain('没找到对得上的歌');
   });
 });
 
@@ -467,18 +512,19 @@ describe('createChatAgent 检索', () => {
     expect(card.stats.total).toBe(1);
   });
 
-  it('决策里没有 queries 时用原话兜底搜一次', async () => {
+  it('决策里没有 queries 时退回关键词兜底（不拿整句去搜）', async () => {
     const providers = defaultProviders();
     const { agent, store } = setup({
       providers,
       responses: [decide(), JSON.stringify({ picks: [{ id: '101', reason: 'ok' }] })],
     });
 
-    await agent.start({ userNeed: '来点歌' });
+    await agent.start({ userNeed: '来点雨天的歌' });
 
     const session = await store.getCurrent();
     const card = session.messages.find(m => m.kind === 'plan-card');
-    expect(card.plan.queries[0]).toMatchObject({ tool: 'searchTracks', keyword: '来点歌' });
+    expect(card.plan.queries[0]).toMatchObject({ tool: 'searchTracks', keyword: '雨天' });
+    expect(card.plan.fallback).toBe(true);
   });
 
   it('多个检索动作并发执行，而不是一条条排队', async () => {
