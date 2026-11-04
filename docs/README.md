@@ -308,8 +308,8 @@ moodtune/
 
 所有 LLM 提示词集中在 `src/agent/prompts.js`，包括：
 
-- `ROUTER_SYSTEM` —— 意图路由
-- `PLANNER_SYSTEM` —— 检索规划
+- `DECIDE_SYSTEM` —— 意图路由 + 检索规划（合并成一次调用）
+- `EXTRACT_SYSTEM` —— 原文检索词提取（原文直搜快速通道）
 - `RERANK_SYSTEM` —— 候选精排
 - `EQ_TUNER_SYSTEM` —— EQ 调音
 

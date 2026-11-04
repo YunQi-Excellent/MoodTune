@@ -10,13 +10,21 @@ import { escapeHtml, fmtDuration } from './format.js';
  */
 
 /** 按消息类型渲染卡片主体。 */
-export function renderAgentBody(message, { cartIds = new Set() } = {}) {
+export function renderAgentBody(message, { cartIds = new Set(), showThinking = true } = {}) {
   const kind = message?.kind;
 
   if (kind === 'text' || kind === 'ack') return `<div>${escapeHtml(message.text || '')}</div>`;
 
   if (kind === 'error') {
-    return `<div class="error-card"><span>⚠️</span><div>${escapeHtml(message.text || '')}</div></div>`;
+    // 失败时把「哪个阶段花了多久」直接摆在卡片上：
+    // 超时到底是模型慢还是检索慢，用户一眼能看出来，也方便我们定位。
+    const timings = String(message.timingsText || '').trim();
+    const timingLine = timings
+      ? `<div class="error-meta">阶段耗时：${escapeHtml(timings)}</div>`
+      : '';
+    return `${showThinking ? renderThinkingHistory(message.thinking) : ''}
+      <div class="error-card"><span>⚠️</span><div>${escapeHtml(message.text || '')}</div></div>
+      ${timingLine}`;
   }
 
   if (kind === 'save-card') {
@@ -30,16 +38,45 @@ export function renderAgentBody(message, { cartIds = new Set() } = {}) {
       </div>`;
   }
 
-  if (kind === 'plan-card') return renderPlanCard(message, { cartIds });
-  if (kind === 'eq-card') return renderEqCard(message);
+  if (kind === 'plan-card') return renderPlanCard(message, { cartIds, showThinking });
+  if (kind === 'eq-card') return renderEqCard(message, { showThinking });
 
   return `<div>${escapeHtml(message?.text || '')}</div>`;
 }
 
+/**
+ * 持久化的思考记录。默认折叠，点开才看完整流式输出。
+ * 和侧边栏里实时的思考节点视觉保持一致（黄色、等宽、可滚动）。
+ */
+export function renderThinkingHistory(thinking) {
+  const text = String(thinking?.text || '').trim();
+  if (!text) return '';
+
+  const elapsed = Number(thinking?.elapsedMs);
+  const meta = Number.isFinite(elapsed) && elapsed > 0
+    ? `<span class="thinking-history-elapsed">${(elapsed / 1000).toFixed(1)}s</span>`
+    : '';
+
+  return `
+    <details class="thinking-history">
+      <summary class="thinking-history-toggle">
+        <span class="chevron">▶</span>
+        <span>🧠 思考记录</span>
+        ${meta}
+      </summary>
+      <div class="thinking-history-content">${escapeHtml(text)}</div>
+    </details>`;
+}
+
 /** 推荐临时歌单：候选勾选框 + 统计行。 */
-export function renderPlanCard(message, { cartIds = new Set() } = {}) {
+export function renderPlanCard(message, { cartIds = new Set(), showThinking = true } = {}) {
   const picks = message.picks || [];
   const stats = message.stats || {};
+  const thinkingHtml = showThinking ? renderThinkingHistory(message.thinking) : '';
+
+  // 默认全选：只要还有可选（未进歌单）的歌，按钮就该显示「取消全选」。
+  const selectableCount = picks.filter(pick => !cartIds.has(pick.id)).length;
+  const selectAllLabel = selectableCount > 0 ? '取消全选' : '全选';
 
   const tracksHtml = picks.map((pick) => {
     const inCart = cartIds.has(pick.id);
@@ -61,6 +98,7 @@ export function renderPlanCard(message, { cartIds = new Set() } = {}) {
   }).join('');
 
   return `
+    ${thinkingHtml}
     <div class="plan-header">
       <div class="plan-title">
         <span>✨ 推荐临时歌单</span>
@@ -68,7 +106,9 @@ export function renderPlanCard(message, { cartIds = new Set() } = {}) {
       <span class="badge">${picks.length} 首</span>
     </div>
     <div class="stats-line">
-      候选 ${stats.total || 0} 首 · 精排 ${stats.filtered || 0} 首${cartIds.size > 0 ? ` · 会话歌单已有 ${cartIds.size} 首` : ''}
+      <span>候选 ${stats.total || 0} 首 · 精排 ${stats.filtered || 0} 首${stats.direct ? ' · 原文直搜' : ''}${stats.rerankSkipped ? ' · 未精排' : ''}${stats.carried ? ` · 含上轮 ${stats.carried} 首` : ''}${cartIds.size > 0 ? ` · 会话歌单已有 ${cartIds.size} 首` : ''}</span>
+      <button class="link-btn" data-action="toggle-select-all" data-msg-id="${message.id}"
+              ${selectableCount > 0 ? '' : 'disabled'}>${selectAllLabel}</button>
     </div>
     <div class="track-list">${tracksHtml || '<div style="color:var(--fg-3);text-align:center;padding:12px;">没有歌曲</div>'}</div>
     <div class="card-actions">
@@ -78,10 +118,11 @@ export function renderPlanCard(message, { cartIds = new Set() } = {}) {
 }
 
 /** 声学 EQ 调校卡片：前级 + 10 段滑杆。 */
-export function renderEqCard(message) {
+export function renderEqCard(message, { showThinking = true } = {}) {
   const eq = message.eq || { preampDb: 0, bands: [] };
   const reason = message.reason || '';
   const preamp = Number(eq.preampDb) || 0;
+  const thinkingHtml = showThinking ? renderThinkingHistory(message.thinking) : '';
 
   const preampHtml = `
     <div class="eq-slider">
@@ -128,6 +169,7 @@ export function renderEqCard(message) {
   `).join('');
 
   return `
+    ${thinkingHtml}
     <div class="eq-header">
       <div class="title">
         <span>🎛 声学 EQ 调校</span>

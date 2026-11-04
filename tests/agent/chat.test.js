@@ -1,17 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createChatAgent } from '../../src/agent/chat.js';
+import {
+  DECIDE_SYSTEM,
+  EXTRACT_SYSTEM,
+  RERANK_SYSTEM,
+} from '../../src/agent/prompts.js';
 import { createSessionService } from '../../src/app/services/sessions.js';
 import { createSessionStore } from '../../src/app/storage/sessions.js';
+import { INTENT_CONFIG } from '../../src/core/constants.js';
 import { createMemoryArea } from '../helpers/memory-area.js';
 
 const NOW = 1_700_000_000_000;
 const FLAT_EQ = { preampDb: 0, bands: Array.from({ length: 10 }, () => ({ frequencyHz: 0, gainDb: 0 })) };
 
-function setup({ responses = [], providers, llm: injectedLlm } = {}) {
+function setup({ responses = [], providers, llm: injectedLlm, searchBudgetMs, now } = {}) {
   const area = createMemoryArea();
   let seq = 0;
   const newId = prefix => `${prefix}-${++seq}`;
-  const store = createSessionStore({ area, now: () => NOW, newId });
+  const clock = now || (() => NOW);
+  const store = createSessionStore({ area, now: clock, newId });
 
   const player = {
     setEq: vi.fn(async eq => ({ ok: true, eq })),
@@ -24,13 +31,20 @@ function setup({ responses = [], providers, llm: injectedLlm } = {}) {
     normalizeSong: song => song,
     defaultEq: () => FLAT_EQ,
     newId,
-    now: () => NOW,
+    now: clock,
   });
 
   const playlists = { save: vi.fn(async payload => ({ id: 'pl-1', ...payload })) };
   const eqPresets = { save: vi.fn(async payload => ({ id: 'eq-1', ...payload })) };
   const notify = vi.fn();
-  const llm = injectedLlm || { stream: vi.fn(async () => responses.shift()) };
+  // 原文提取是无条件并行的，测试里默认返回空，避免吃掉 responses 队列。
+  const llm = injectedLlm || {
+    stream: vi.fn(async (messages) => {
+      const system = messages[0]?.content || '';
+      if (system === EXTRACT_SYSTEM) return JSON.stringify({ query: '', specific: false });
+      return responses.shift();
+    }),
+  };
 
   const agent = createChatAgent({
     llm,
@@ -40,9 +54,10 @@ function setup({ responses = [], providers, llm: injectedLlm } = {}) {
     eqPresets,
     player,
     notify,
-    now: () => NOW,
+    now: clock,
     newId,
     log: { warn: () => {}, error: () => {} },
+    searchBudgetMs,
   });
 
   return { agent, store, sessions, player, playlists, eqPresets, notify, llm };
@@ -64,7 +79,7 @@ function defaultProviders() {
   };
 }
 
-const route = (mode, reply = '收到') => JSON.stringify({ mode, reply, payload: {} });
+const decide = (patch = {}) => JSON.stringify({ mode: 'search', reply: '收到', payload: {}, ...patch });
 
 describe('createChatAgent 参数校验', () => {
   it('缺依赖时立刻报错', () => {
@@ -74,7 +89,7 @@ describe('createChatAgent 参数校验', () => {
 
 describe('createChatAgent 路由', () => {
   it('chat 模式写回 ack 和帮助文案', async () => {
-    const { agent, store, notify } = setup({ responses: [route('chat', '好的')] });
+    const { agent, store, notify } = setup({ responses: [decide({ mode: 'chat', reply: '好的' })] });
 
     await agent.start({ userNeed: '你好' });
 
@@ -87,25 +102,29 @@ describe('createChatAgent 路由', () => {
     expect(notify).toHaveBeenCalledWith('CHAT_THINKING_END', { sessionId: session.id });
   });
 
-  it('路由模型输出坏 JSON 时退回搜索流程', async () => {
-    const { agent, store, notify } = setup({ responses: ['不是 JSON'] });
+  it('决策模型输出坏 JSON 时用原话兜底检索', async () => {
+    const { agent, store, notify } = setup({
+      responses: ['不是 JSON', JSON.stringify({ picks: [{ id: '101', reason: '兜底' }] })],
+    });
 
     await agent.start({ userNeed: '随便听听' });
 
     const session = await store.getCurrent();
-    expect(session.messages.map(m => m.kind)).toContain('error');
-    expect(notify).toHaveBeenCalledWith('CHAT_PROGRESS', expect.objectContaining({ stage: 'plan' }));
+    const card = session.messages.find(m => m.kind === 'plan-card');
+    expect(card.plan.queries[0]).toMatchObject({ tool: 'searchTracks', keyword: '随便听听' });
+    // 没有额外一次「规划」调用：坏 JSON 直接走兜底计划。
+    expect(notify).toHaveBeenCalledWith('CHAT_PROGRESS', expect.objectContaining({ stage: 'execute' }));
   });
 });
 
 describe('createChatAgent 检索', () => {
-  it('规划 → 检索 → 精排，写入 plan-card', async () => {
+  it('决策 → 检索 → 精排，写入 plan-card', async () => {
     const providers = defaultProviders();
     const { agent, store } = setup({
       providers,
       responses: [
-        route('search', '找歌'),
-        JSON.stringify({
+        decide({
+          reply: '找歌',
           queries: [{ tool: 'searchSongs', keyword: '雨天', limit: 2 }],
           targetCount: 2,
         }),
@@ -121,14 +140,311 @@ describe('createChatAgent 检索', () => {
     expect(card.picks).toHaveLength(1);
     expect(card.picks[0]).toMatchObject({ id: 101, name: '雨天', reason: '氛围合适' });
     expect(card.plan.queries[0]).toMatchObject({ tool: 'searchSongs', keyword: '雨天' });
-    expect(card.stats).toEqual({ raw: 2, total: 2, filtered: 2 });
+    expect(card.stats).toMatchObject({ raw: 2, total: 2, filtered: 2, carried: 0, added: 1 });
+    // 思考流随卡片一起落库，重载后还能展开看。
+    expect(card.thinking.text).toContain('"queries"');
+    expect(card.thinking.text).toContain('"picks"');
 
     expect(providers.primary.searchTracks).toHaveBeenCalledWith({
       keyword: '雨天',
       limit: 2,
       offset: 0,
       order: 'hot',
+      signal: expect.any(AbortSignal),
     });
+  });
+
+  it('检索期间不结束思考节点（否则停止按钮会消失）', async () => {
+    const providers = defaultProviders();
+    const { agent, notify } = setup({
+      providers,
+      responses: [
+        decide({
+          reply: '找歌',
+          queries: [{ tool: 'searchSongs', keyword: '雨天', limit: 2 }],
+          targetCount: 2,
+        }),
+        JSON.stringify({ picks: [{ id: '101', reason: '氛围合适' }] }),
+      ],
+    });
+
+    await agent.start({ userNeed: '来点雨天的歌' });
+
+    const calls = notify.mock.calls;
+    const types = calls.map(([type]) => type);
+    const executeAt = calls.findIndex(
+      ([type, payload]) => type === 'CHAT_THINKING_START' && payload?.stage === 'execute',
+    );
+
+    expect(executeAt).toBeGreaterThanOrEqual(0);
+    // 一轮检索只允许在真正结束时发一次 THINKING_END。
+    expect(types.filter(type => type === 'CHAT_THINKING_END')).toHaveLength(1);
+    expect(types.lastIndexOf('CHAT_THINKING_END')).toBeGreaterThan(executeAt);
+  });
+
+  it('原文直搜命中时跳过规划，直接出结果', async () => {
+    const providers = {
+      primary: {
+        label: '测试平台',
+        capabilities: { search: ['tracks'] },
+        searchTracks: vi.fn(async () => ({
+          tracks: [
+            { id: 900, name: '霓虹下的酒神', artists: '酒神', album: '霓虹下的酒神 EP', durationMs: 180_000 },
+            { id: 901, name: '别的歌', artists: 'X', album: 'Y', durationMs: 200_000 },
+          ],
+          total: 2,
+        })),
+      },
+    };
+    const llm = {
+      stream: vi.fn(async (messages) => {
+        const system = messages[0]?.content || '';
+        if (system === EXTRACT_SYSTEM) return JSON.stringify({ query: '酒神op', specific: true });
+        if (system === DECIDE_SYSTEM) return decide({ reply: '找歌' });
+        throw new Error('命中后不应再调决策/精排');
+      }),
+    };
+    const { agent, store } = setup({ providers, llm });
+
+    await agent.start({ userNeed: '我想听酒神op' });
+
+    const session = await store.getCurrent();
+    const card = session.messages.find(m => m.kind === 'plan-card');
+
+    expect(card.picks[0]).toMatchObject({
+      id: 900,
+      name: '霓虹下的酒神',
+      reason: '原文直搜命中',
+    });
+    expect(card.stats).toMatchObject({ direct: true, total: 2 });
+    expect(card.plan.queries[0]).toMatchObject({ tool: 'searchTracks', keyword: '酒神op' });
+    expect(card.thinking.text).toContain('原文提取：酒神op');
+
+    // 原文直搜用的是网页搜索同款相关性排序（不带 order=hot）。
+    expect(providers.primary.searchTracks).toHaveBeenCalledWith({
+      keyword: '酒神op',
+      limit: INTENT_CONFIG.literalSearchLimit,
+      offset: 0,
+      order: '',
+      signal: expect.anything(),
+    });
+    // 只调了「抽取 + 路由」两次，没有规划/精排。
+    expect(llm.stream).toHaveBeenCalledTimes(2);
+  });
+
+  it('原文直搜没有命中时回退到决策里的检索动作', async () => {
+    const providers = defaultProviders();
+    const llm = {
+      stream: vi.fn(async (messages) => {
+        const system = messages[0]?.content || '';
+        if (system === EXTRACT_SYSTEM) return JSON.stringify({ query: '酒神op', specific: true });
+        if (system === DECIDE_SYSTEM) {
+          return decide({ queries: [{ tool: 'searchTracks', keyword: '雨天', limit: 2 }], targetCount: 1 });
+        }
+        if (system === RERANK_SYSTEM) return JSON.stringify({ picks: [{ id: '101', reason: 'ok' }] });
+        throw new Error('unexpected llm call');
+      }),
+    };
+    const { agent, store } = setup({ providers, llm });
+
+    await agent.start({ userNeed: '我想听酒神op' });
+
+    const session = await store.getCurrent();
+    const card = session.messages.find(m => m.kind === 'plan-card');
+
+    expect(card.picks.map(pick => pick.id)).toEqual([101]);
+    expect(card.stats.direct).toBeUndefined();
+    expect(card.plan.queries[0]).toMatchObject({ tool: 'searchTracks', keyword: '雨天' });
+  });
+
+  it('原话搜不到时用剥掉「的 op」的核心词再搜一次', async () => {
+    // 真实平台行为：搜「P4D的op」返回一堆钢琴练习曲，搜「p4d」才回到原声带。
+    const providers = {
+      primary: {
+        label: '测试平台',
+        capabilities: { search: ['tracks'] },
+        searchTracks: vi.fn(async ({ keyword }) => (keyword === 'P4D的op'
+          ? {
+            tracks: [{ id: 1, name: '小奏鸣曲 op 36 no 4', artists: '阿D', album: '钢琴考级' }],
+            total: 302,
+          }
+          : {
+            tracks: [
+              { id: 200, name: 'Your Affection (“NEVER MORE”P4D-EDIT ver.)', artists: '平田志穂子', album: 'Persona4 DANCING ALL NIGHT Original Soundtrack' },
+              { id: 201, name: 'Dance!', artists: '平田志穂子', album: 'Persona4 DANCING ALL NIGHT Original Soundtrack' },
+            ],
+            total: 262,
+          })),
+      },
+    };
+    const llm = {
+      stream: vi.fn(async (messages) => {
+        const system = messages[0]?.content || '';
+        if (system === EXTRACT_SYSTEM) return JSON.stringify({ query: 'P4D的op', specific: true });
+        if (system === DECIDE_SYSTEM) return decide({ reply: '找歌' });
+        throw new Error('命中后不应再调决策/精排');
+      }),
+    };
+    const { agent, store } = setup({ providers, llm });
+
+    await agent.start({ userNeed: '我想听P4D的op' });
+
+    const session = await store.getCurrent();
+    const card = session.messages.find(m => m.kind === 'plan-card');
+
+    expect(card.stats.direct).toBe(true);
+    expect(card.picks.map(pick => pick.id)).toEqual([200, 201]);
+    expect(card.plan.queries[0]).toMatchObject({ keyword: 'p4d' });
+    expect(card.thinking.text).toContain('原文提取：p4d');
+    expect(providers.primary.searchTracks.mock.calls.map(([options]) => options.keyword))
+      .toEqual(['P4D的op', 'p4d']);
+  });
+
+  it('原文直搜命中时不再等慢路由', async () => {
+    let releaseRoute;
+    const providers = {
+      primary: {
+        label: '测试平台',
+        capabilities: { search: ['tracks'] },
+        searchTracks: vi.fn(async () => ({
+          tracks: [{ id: 900, name: '霓虹下的酒神', artists: '酒神', album: '霓虹下的酒神 EP' }],
+          total: 1,
+        })),
+      },
+    };
+    const llm = {
+      stream: vi.fn((messages) => {
+        const system = messages[0]?.content || '';
+        if (system === EXTRACT_SYSTEM) return Promise.resolve(JSON.stringify({ query: '酒神', specific: true }));
+        if (system === DECIDE_SYSTEM) {
+          return new Promise((resolve) => { releaseRoute = () => resolve(decide({ reply: '慢路由' })); });
+        }
+        throw new Error('命中后不应再调决策/精排');
+      }),
+    };
+    const { agent, store } = setup({ providers, llm });
+
+    try {
+      await agent.start({ userNeed: '我想听酒神' });
+
+      const session = await store.getCurrent();
+      const card = session.messages.find(m => m.kind === 'plan-card');
+      const ack = session.messages.find(m => m.kind === 'ack');
+
+      expect(card.stats.direct).toBe(true);
+      // 用的是兜底 ack，说明没有等路由那一路。
+      expect(ack.text).toBe('收到，正在找歌…');
+    } finally {
+      if (releaseRoute) releaseRoute();
+    }
+  });
+
+  it('检索预算耗尽时中止并给出超时提示，而不是无限跑', async () => {
+    // 手动时钟：让「决策」这一步真的消耗掉一段时间，阶段耗时才有内容。
+    let clock = NOW;
+    const now = () => clock;
+    const slowDecide = {
+      stream: vi.fn(async (messages) => {
+        const system = messages[0]?.content || '';
+        if (system === EXTRACT_SYSTEM) return JSON.stringify({ query: '', specific: false });
+        if (system === DECIDE_SYSTEM) {
+          clock += 10;
+          return decide({ queries: [{ tool: 'searchTracks', keyword: '慢查询' }], targetCount: 1 });
+        }
+        throw new Error('unexpected llm call');
+      }),
+    };
+    const providers = {
+      primary: {
+        label: '测试平台',
+        capabilities: { search: ['tracks'] },
+        searchTracks: vi.fn(({ signal } = {}) => new Promise((_, reject) => {
+          const fail = () => reject(Object.assign(new Error('已中止'), { name: 'AbortError' }));
+          if (signal?.aborted) { fail(); return; }
+          signal?.addEventListener('abort', fail);
+        })),
+      },
+    };
+    const { agent, store } = setup({
+      providers,
+      llm: slowDecide,
+      now,
+      searchBudgetMs: 50,
+    });
+
+    await agent.start({ userNeed: '慢查询' });
+
+    const session = await store.getCurrent();
+    const error = session.messages.find(message => message.kind === 'error');
+    expect(error.text).toContain('检索超时');
+    // 超时也必须留下可展开的思考记录与阶段耗时，用户才知道到底慢在哪一步。
+    expect(error.timingsText).toContain('决策');
+    expect(error.thinking.text).toContain('阶段耗时');
+  });
+
+  it('决策阶段就吃光预算时，提示指向模型而不是检索', async () => {
+    let clock = NOW;
+    const now = () => clock;
+    const abortErr = () => Object.assign(new Error('已中止'), { name: 'AbortError' });
+    const llm = {
+      stream: vi.fn((messages, { signal } = {}) => {
+        const system = messages[0]?.content || '';
+        if (system === EXTRACT_SYSTEM) return Promise.resolve(JSON.stringify({ query: '', specific: false }));
+        if (system === DECIDE_SYSTEM) {
+          // 决策一直不返回，并且在等待期间把预算吃光。
+          clock += 80;
+          return new Promise((_, reject) => {
+            if (signal?.aborted) { reject(abortErr()); return; }
+            signal?.addEventListener('abort', () => reject(abortErr()));
+          });
+        }
+        throw new Error('unexpected llm call');
+      }),
+    };
+    const { agent, store } = setup({ llm, now, searchBudgetMs: 50 });
+
+    await agent.start({ userNeed: '深夜写代码的歌' });
+
+    const session = await store.getCurrent();
+    const error = session.messages.find(message => message.kind === 'error');
+    expect(error.text).toContain('决策阶段');
+    // 模型什么都没吐出来时，思考记录也不能是空的（否则卡片没法点开）。
+    expect(error.thinking.text).toContain('模型没有输出可展示的分析');
+  });
+
+  it('中断会取消进行中的平台检索，且不写结果/错误卡片', async () => {
+    let markStarted;
+    const started = new Promise((resolve) => { markStarted = resolve; });
+    const abortErr = () => Object.assign(new Error('已中止'), { name: 'AbortError' });
+
+    const providers = {
+      primary: {
+        label: '测试平台',
+        capabilities: { search: ['tracks'] },
+        searchTracks: vi.fn(({ signal } = {}) => {
+          markStarted();
+          return new Promise((_, reject) => {
+            if (signal?.aborted) { reject(abortErr()); return; }
+            signal?.addEventListener('abort', () => reject(abortErr()));
+          });
+        }),
+      },
+    };
+    const { agent, store, notify } = setup({
+      providers,
+      responses: [
+        decide({ queries: [{ tool: 'searchTracks', keyword: '慢查询' }], targetCount: 3 }),
+      ],
+    });
+
+    const running = agent.start({ userNeed: '慢查询' });
+    await started;
+    expect(agent.abort()).toBe(true);
+    await running;
+
+    const session = await store.getCurrent();
+    expect(session.messages.map(message => message.kind)).toEqual(['text', 'ack']);
+    expect(notify.mock.calls.some(([type]) => type === 'CHAT_THINKING_END')).toBe(false);
   });
 
   it('排除会话购物车里已有的歌', async () => {
@@ -136,8 +452,7 @@ describe('createChatAgent 检索', () => {
     const { agent, store, sessions } = setup({
       providers,
       responses: [
-        route('search'),
-        JSON.stringify({ queries: [{ tool: 'searchSongs', keyword: '雨天' }], targetCount: 1 }),
+        decide({ queries: [{ tool: 'searchSongs', keyword: '雨天' }], targetCount: 1 }),
         JSON.stringify({ picks: [{ id: 102, reason: 'ok' }] }),
       ],
     });
@@ -152,14 +467,196 @@ describe('createChatAgent 检索', () => {
     expect(card.stats.total).toBe(1);
   });
 
-  it('规划失败时写入错误卡片', async () => {
-    const { agent, store } = setup({ responses: [route('search'), '完全没有 JSON'] });
+  it('决策里没有 queries 时用原话兜底搜一次', async () => {
+    const providers = defaultProviders();
+    const { agent, store } = setup({
+      providers,
+      responses: [decide(), JSON.stringify({ picks: [{ id: '101', reason: 'ok' }] })],
+    });
 
     await agent.start({ userNeed: '来点歌' });
 
     const session = await store.getCurrent();
-    const error = session.messages.find(m => m.kind === 'error');
-    expect(error.text).toBe('模型没有给出有效的检索计划');
+    const card = session.messages.find(m => m.kind === 'plan-card');
+    expect(card.plan.queries[0]).toMatchObject({ tool: 'searchTracks', keyword: '来点歌' });
+  });
+
+  it('多个检索动作并发执行，而不是一条条排队', async () => {
+    const started = [];
+    const gates = [];
+    const providers = {
+      primary: {
+        label: '测试平台',
+        capabilities: { search: ['tracks'] },
+        searchTracks: vi.fn(({ keyword }) => {
+          started.push(keyword);
+          return new Promise((resolve) => {
+            gates.push(() => resolve({ tracks: [{ id: keyword, name: keyword }], total: 1 }));
+          });
+        }),
+      },
+    };
+    const llm = {
+      stream: vi.fn(async (messages) => {
+        const system = messages[0]?.content || '';
+        if (system === EXTRACT_SYSTEM) return JSON.stringify({ query: '', specific: false });
+        if (system === DECIDE_SYSTEM) {
+          return decide({
+            queries: ['a', 'b', 'c'].map(keyword => ({ tool: 'searchTracks', keyword })),
+          });
+        }
+        return JSON.stringify({ picks: [] });
+      }),
+    };
+    const { agent } = setup({ providers, llm });
+
+    const running = agent.start({ userNeed: '来点歌' });
+    // 三条检索必须同时挂起：只要还是串行，这里最多只会看到 1 条。
+    await vi.waitFor(() => expect(started).toHaveLength(3));
+    gates.forEach(resolve => resolve());
+    await running;
+  });
+
+  it('剩余预算不够精排时直接给候选，不硬跑精排', async () => {
+    let clock = NOW;
+    const llm = {
+      stream: vi.fn(async (messages) => {
+        const system = messages[0]?.content || '';
+        if (system === EXTRACT_SYSTEM) return JSON.stringify({ query: '', specific: false });
+        if (system === DECIDE_SYSTEM) {
+          clock += 25_000;
+          return decide({ queries: [{ tool: 'searchTracks', keyword: '雨天' }] });
+        }
+        throw new Error('预算不足时不应再调精排');
+      }),
+    };
+    const { agent, store } = setup({
+      providers: defaultProviders(),
+      llm,
+      now: () => clock,
+    });
+
+    await agent.start({ userNeed: '来点歌' });
+
+    const card = (await store.getCurrent()).messages.find(m => m.kind === 'plan-card');
+    expect(card.stats.rerankSkipped).toBe(true);
+    expect(card.picks.length).toBeGreaterThan(0);
+  });
+
+  it('「再找一些」承接上一轮结果，只补进不在歌单里的新歌', async () => {
+    const providers = {
+      primary: {
+        label: '测试平台',
+        capabilities: { search: ['tracks'] },
+        searchTracks: vi.fn(async () => ({
+          tracks: [
+            { id: 201, name: '新歌A', artists: 'X', album: 'Y' },
+            { id: 202, name: '新歌B', artists: 'X', album: 'Y' },
+          ],
+          total: 2,
+        })),
+      },
+    };
+    const llm = {
+      stream: vi.fn(async (messages) => {
+        const system = messages[0]?.content || '';
+        if (system === EXTRACT_SYSTEM) return JSON.stringify({ query: '', specific: false });
+        if (system === DECIDE_SYSTEM) {
+          return decide({
+            carryOver: true,
+            queries: [{ tool: 'searchTracks', keyword: '新方向' }],
+            targetCount: 10,
+          });
+        }
+        return JSON.stringify({ picks: [{ id: '201', reason: 'ok' }, { id: '202', reason: 'ok' }] });
+      }),
+    };
+    const { agent, store, sessions } = setup({ providers, llm });
+    const session = await store.create('测试');
+    await store.appendMessage(session.id, {
+      id: 'old-user',
+      role: 'user',
+      kind: 'text',
+      at: NOW,
+      text: '我想听高达SEED的op',
+    });
+    // 上一轮给过 3 首，其中 101 已经被加进歌单。
+    await store.appendMessage(session.id, {
+      id: 'old-card',
+      role: 'agent',
+      at: NOW,
+      kind: 'plan-card',
+      picks: [
+        { id: 101, name: '旧1', artists: 'X', album: 'Y' },
+        { id: 102, name: '旧2', artists: 'X', album: 'Y' },
+        { id: 103, name: '旧3', artists: 'X', album: 'Y' },
+      ],
+      stats: {},
+      plan: { queries: [] },
+    });
+    await sessions.cart.add(session.id, [{ id: 101, provider: 'netease' }]);
+
+    await agent.start({ userNeed: '再检索一下，不止这几首', sessionId: session.id });
+
+    const fresh = await store.get(session.id);
+    const card = fresh.messages.filter(m => m.kind === 'plan-card').pop();
+    // 旧歌里已经在歌单的 101 不再出现，102/103 保留，后面接本轮新增。
+    expect(card.picks.map(pick => pick.id)).toEqual([102, 103, 201, 202]);
+    expect(card.stats).toMatchObject({ carried: 2, added: 2 });
+
+    // 决策调用必须带上上一轮上下文，否则「不止这几首」根本无从理解。
+    const decideCall = llm.stream.mock.calls.find(([messages]) => messages[0]?.content === DECIDE_SYSTEM);
+    const decidePrompt = decideCall[0][1].content;
+    expect(decidePrompt).toContain('上一轮用户需求：我想听高达SEED的op');
+    expect(decidePrompt).toContain('上一轮结果：旧1、旧2、旧3 等 3 首');
+  });
+
+  it('追加检索没有新歌时给提示，不重复渲染整张卡片', async () => {
+    const providers = {
+      primary: {
+        label: '测试平台',
+        capabilities: { search: ['tracks'] },
+        searchTracks: vi.fn(async () => ({
+          tracks: [
+            { id: 102, name: '旧2', artists: 'X', album: 'Y' },
+            { id: 103, name: '旧3', artists: 'X', album: 'Y' },
+          ],
+          total: 2,
+        })),
+      },
+    };
+    const llm = {
+      stream: vi.fn(async (messages) => {
+        const system = messages[0]?.content || '';
+        if (system === EXTRACT_SYSTEM) return JSON.stringify({ query: '', specific: false });
+        if (system === DECIDE_SYSTEM) {
+          return decide({ carryOver: true, queries: [{ tool: 'searchTracks', keyword: '同款' }] });
+        }
+        throw new Error('候选都被排除后不应再精排');
+      }),
+    };
+    const { agent, store } = setup({ providers, llm });
+    const session = await store.create('测试');
+    await store.appendMessage(session.id, {
+      id: 'old-card',
+      role: 'agent',
+      at: NOW,
+      kind: 'plan-card',
+      picks: [
+        { id: 102, name: '旧2', artists: 'X', album: 'Y' },
+        { id: 103, name: '旧3', artists: 'X', album: 'Y' },
+      ],
+      stats: {},
+      plan: { queries: [] },
+    });
+
+    await agent.start({ userNeed: '再来点', sessionId: session.id });
+
+    const fresh = await store.get(session.id);
+    expect(fresh.messages.filter(m => m.kind === 'plan-card')).toHaveLength(1);
+    const tip = fresh.messages[fresh.messages.length - 1];
+    expect(tip.kind).toBe('text');
+    expect(tip.text).toContain('没有找到新的歌');
   });
 
   it('没有检索结果时提示已包含候选', async () => {
@@ -168,8 +665,7 @@ describe('createChatAgent 检索', () => {
     const { agent, store } = setup({
       providers,
       responses: [
-        route('search'),
-        JSON.stringify({ queries: [{ tool: 'searchTracks', keyword: 'x' }], targetCount: 1 }),
+        decide({ queries: [{ tool: 'searchTracks', keyword: 'x' }], targetCount: 1 }),
       ],
     });
 

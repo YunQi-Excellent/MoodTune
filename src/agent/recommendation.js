@@ -1,3 +1,4 @@
+import { abortError, isAbortError, throwIfAborted } from '../core/abort.js';
 import { INTENT_CONFIG } from '../core/constants.js';
 import { trackKey } from '../core/track.js';
 
@@ -111,8 +112,9 @@ export function selectPicks(rawPicks, candidates, targetCount) {
 }
 
 /** 执行单个检索动作，返回带 sourceWeight 的候选。 */
-export async function executeQuery(query, provider, { sleep = defaultSleep } = {}) {
+export async function executeQuery(query, provider, { sleep = defaultSleep, signal } = {}) {
   if (!provider) throw new Error('executeQuery 需要 provider');
+  throwIfAborted(signal);
 
   const tool = normalizeToolName(query.tool);
 
@@ -123,27 +125,41 @@ export async function executeQuery(query, provider, { sleep = defaultSleep } = {
       limit,
       offset: 0,
       order: 'hot',
+      signal,
     });
     return result.tracks.map(track => ({ ...track, sourceWeight: 3 }));
   }
 
   if (tool === 'searchPlaylists') {
-    const limit = Math.min(Math.max(Number(query.limit) || 5, 1), 20);
-    const maxTracks = Math.min(Math.max(Number(query.maxTracksPerPlaylist) || 200, 1), 500);
+    // 挖歌单是慢路径里最贵的一步：歌单数和每单曲目数都必须封顶，
+    // 否则规划器一句 "limit: 20, maxTracksPerPlaylist: 500" 就能吃掉整轮预算。
+    const limit = Math.min(
+      Math.max(Number(query.limit) || 3, 1),
+      INTENT_CONFIG.playlistQueriesLimit,
+    );
+    const maxTracks = Math.min(
+      Math.max(Number(query.maxTracksPerPlaylist) || 100, 1),
+      INTENT_CONFIG.playlistTracksLimit,
+    );
     const playlists = await provider.searchPlaylists({
       keyword: String(query.keyword || ''),
       limit,
+      signal,
     });
 
     const collected = [];
     for (const playlist of playlists) {
+      throwIfAborted(signal);
       try {
-        const tracks = await provider.getPlaylistTracks(playlist.id, { maxTracks });
+        const tracks = await provider.getPlaylistTracks(playlist.id, { maxTracks, signal });
         for (const track of tracks) collected.push({ ...track, sourceWeight: 2 });
       } catch (e) {
+        // 用户中断不是「这个歌单失败」，必须向上抛，否则会继续挖下一个。
+        if (isAbortError(e) || signal?.aborted) throw abortError();
         console.warn(`[意图搜索] 挖歌单 ${playlist.id} 失败：${e?.message || e}`);
       }
       await sleep(200);
+      throwIfAborted(signal);
     }
     return collected;
   }
@@ -151,20 +167,21 @@ export async function executeQuery(query, provider, { sleep = defaultSleep } = {
   if (tool === 'getArtistTracks') {
     const artistName = String(query.artistName || '').trim();
     if (!artistName) return [];
-    const result = await provider.getArtistTracks(artistName);
+    const result = await provider.getArtistTracks(artistName, { signal });
     return result.tracks.map(track => ({ ...track, sourceWeight: 1 }));
   }
 
-  if (tool === 'myPlaylists') return executeMyPlaylistsQuery(query, provider, { sleep });
+  if (tool === 'myPlaylists') return executeMyPlaylistsQuery(query, provider, { sleep, signal });
 
   throw new Error(`未知工具：${query.tool}`);
 }
 
 /** 从用户自己的歌单里挖歌：按名字匹配、排除空歌单、限制数量。 */
-export async function executeMyPlaylistsQuery(query, provider, { sleep = defaultSleep } = {}) {
+export async function executeMyPlaylistsQuery(query, provider, { sleep = defaultSleep, signal } = {}) {
   if (!provider) throw new Error('executeMyPlaylistsQuery 需要 provider');
+  throwIfAborted(signal);
 
-  const data = await provider.getUserPlaylists({ limit: 1000 });
+  const data = await provider.getUserPlaylists({ limit: 1000, signal });
   const allPlaylists = data.playlists || [];
   if (allPlaylists.length === 0) throw new Error('你的音乐账号下没有任何歌单');
 
@@ -197,17 +214,24 @@ export async function executeMyPlaylistsQuery(query, provider, { sleep = default
     p.trackCount === null || p.trackCount === undefined || p.trackCount > 0
   ));
 
-  const limit = Math.min(Math.max(Number(query.limit) || 5, 1), 20);
+  const limit = Math.min(
+    Math.max(Number(query.limit) || 3, 1),
+    INTENT_CONFIG.playlistQueriesLimit,
+  );
   const picked = targets.slice(0, limit);
   if (picked.length === 0) throw new Error('匹配到的歌单都是空的');
 
-  const maxTracks = Math.min(Math.max(Number(query.maxTracksPerPlaylist) || 400, 1), 1000);
+  const maxTracks = Math.min(
+    Math.max(Number(query.maxTracksPerPlaylist) || 100, 1),
+    INTENT_CONFIG.playlistTracksLimit,
+  );
   const seen = new Set();
   const collected = [];
 
   for (const playlist of picked) {
+    throwIfAborted(signal);
     try {
-      const tracks = await provider.getPlaylistTracks(playlist.id, { maxTracks });
+      const tracks = await provider.getPlaylistTracks(playlist.id, { maxTracks, signal });
       for (const track of tracks) {
         const key = trackKey(track) || track.id;
         if (seen.has(key)) continue;
@@ -215,9 +239,11 @@ export async function executeMyPlaylistsQuery(query, provider, { sleep = default
         collected.push({ ...track, sourceWeight: 4, fromPlaylist: playlist.name });
       }
     } catch (e) {
+      if (isAbortError(e) || signal?.aborted) throw abortError();
       console.warn(`[意图搜索] 挖用户歌单 ${playlist.id} 失败：${e?.message || e}`);
     }
     await sleep(200);
+    throwIfAborted(signal);
   }
 
   return collected;

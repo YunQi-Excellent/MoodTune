@@ -43,6 +43,31 @@ describe('searchSongs', () => {
     await expect(client.searchSongs('jay')).rejects.toThrow('搜索失败');
     expect(requestJson).toHaveBeenCalledTimes(2);
   });
+
+  it('中止不会被 cloudsearch 回退吞掉', async () => {
+    const requestJson = vi.fn(async () => {
+      throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    });
+    const client = makeClient(requestJson);
+    const controller = new AbortController();
+
+    await expect(client.searchSongs('jay', { signal: controller.signal }))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    expect(requestJson).toHaveBeenCalledTimes(1);
+  });
+
+  it('signal 透传到 HTTP 层', async () => {
+    const requestJson = vi.fn(async () => ({ result: { songs: [], songCount: 0 } }));
+    const client = makeClient(requestJson);
+    const controller = new AbortController();
+
+    await client.searchSongs('jay', { signal: controller.signal });
+
+    expect(requestJson).toHaveBeenCalledWith(
+      '/api/cloudsearch/get/web',
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
 });
 
 describe('getPlaylistTracks', () => {
@@ -93,6 +118,23 @@ describe('getPlaylistTracks', () => {
     const client = makeClient(requestJson);
 
     await expect(client.getPlaylistTracks(9)).rejects.toThrow('trackIds 为空');
+  });
+
+  it('中止后不再继续分批拉歌曲详情', async () => {
+    const controller = new AbortController();
+    const requestJson = vi.fn(async (path) => {
+      if (path === '/api/v6/playlist/detail') {
+        return { playlist: { trackIds: [1, 2, 3, 4].map(id => ({ id })) } };
+      }
+      controller.abort();
+      throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    });
+    const client = makeClient(requestJson);
+
+    await expect(client.getPlaylistTracks(9, { batchSize: 1, signal: controller.signal }))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    // 1 次歌单详情 + 第 1 批详情；第 1 批就中止了，后面的批次不该再发。
+    expect(requestJson).toHaveBeenCalledTimes(2);
   });
 });
 

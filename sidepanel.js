@@ -41,6 +41,8 @@ const state = {
   messageNodes: new Map(),
   thinkingRecords: [],
   running: false,
+  // 用户手动中断后忽略迟到的思考/进度事件，避免按钮又被重新点亮
+  stopped: false,
 };
 
 /* ================= Header ================= */
@@ -274,6 +276,16 @@ function renderCartList() {
       <button class="remove" data-remove="${s.id}" title="移除">✕</button>
     </div>
   `).join('');
+}
+
+/** 根据当前勾选状态更新「全选 / 取消全选」按钮文案。 */
+function syncSelectAllLabel(node) {
+  if (!node) return;
+  const btn = node.querySelector('[data-action="toggle-select-all"]');
+  if (!btn) return;
+  const boxes = [...node.querySelectorAll('.track-cb:not(:disabled)')];
+  btn.disabled = boxes.length === 0;
+  btn.textContent = boxes.length > 0 && boxes.every(cb => cb.checked) ? '取消全选' : '全选';
 }
 
 function refreshPlanCards() {
@@ -820,7 +832,10 @@ function appendMessageNode(m, { animate = false } = {}) {
 
     node.className = `msg-agent ${m.kind || ''}${isBranchStart ? ' branch-start' : ''}`;
     const cartIds = new Set((state.currentSession?.cart || []).map(song => song.id));
-    const body = renderAgentBody(m, { cartIds });
+    // 当前会话里还留着实时思考节点时，卡片不再重复渲染一份；
+    // 重新打开侧边栏 / 切回会话时没有实时节点，就用持久化的思考记录。
+    const hasLiveThinking = state.thinkingRecords.length > 0;
+    const body = renderAgentBody(m, { cartIds, showThinking: !hasLiveThinking });
     
     // AI 节点：46px 轨道，分支线 X=32px，卡片向右深度缩进 22px
     node.innerHTML = `
@@ -942,6 +957,12 @@ async function applySoundChip(msg, msgId, btn) {
   pushLog('ok', `已切换到「${preset.name}」${describeChainSuffix(state.currentEffects)}`);
 }
 
+$('#chatStream').addEventListener('change', (e) => {
+  const cb = e.target.closest('.track-cb');
+  if (!cb) return;
+  syncSelectAllLabel(cb.closest('.msg-agent'));
+});
+
 $('#chatStream').addEventListener('click', async e => {
   const toggle = e.target.closest('.thinking-toggle');
   if (toggle) {
@@ -955,6 +976,19 @@ $('#chatStream').addEventListener('click', async e => {
   const action = btn.getAttribute('data-action');
 
   const msgId = btn.getAttribute('data-msg-id');
+
+  // 全选 / 取消全选：只动勾选状态，不改数据，用户确认后再点「加入歌单」。
+  if (action === 'toggle-select-all') {
+    const node = state.messageNodes.get(msgId);
+    if (!node) return;
+    const boxes = [...node.querySelectorAll('.track-cb:not(:disabled)')];
+    if (boxes.length === 0) return;
+    const nextChecked = !boxes.every(cb => cb.checked);
+    boxes.forEach((cb) => { cb.checked = nextChecked; });
+    syncSelectAllLabel(node);
+    return;
+  }
+
   if (action === 'toggle-eq-presets') {
     const node = state.messageNodes.get(msgId);
     const panel = node?.querySelector('.eq-presets');
@@ -1104,11 +1138,22 @@ inputEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
 });
 sendBtn.addEventListener('click', sendChat);
-stopBtn.addEventListener('click', () => {
-  setRunningUI(false);
-  finishThinking();
+
+/** 中断当前这一轮：本地立刻收尾，同时通知后台取消平台请求与模型流。 */
+function abortRunning() {
+  if (!state.running) return;
+  state.stopped = true;
+  finishThinking({ label: '已中断' });
   sendMsg({ action: 'chatAbort' }).catch(() => {});
-  pushLog('err', '已中断');
+  pushLog('err', '已中断本轮检索');
+}
+
+stopBtn.addEventListener('click', abortRunning);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && state.running) {
+    e.preventDefault();
+    abortRunning();
+  }
 });
 
 function setRunningUI(running) {
@@ -1123,6 +1168,7 @@ async function sendChat() {
   if (!text) return;
   inputEl.value = '';
   inputEl.style.height = 'auto';
+  state.stopped = false;
 
   if (!state.currentSession) {
     const r = await sendMsg({ action: 'createSession', name: text.slice(0, 20) });
@@ -1151,9 +1197,12 @@ async function sendChat() {
 }
 
 /* ================= 思考节点 (首项 AI 动作：必定带分支曲线) ================= */
-function stageLabel(stage) {
+function stageLabel(stage, detail) {
+  if (detail) return detail;
   return stage === 'rerank' ? '精选歌曲中'
-    : stage === 'route' ? '理解意图中'
+    : stage === 'execute' ? '检索歌曲中'
+    : stage === 'plan' ? '规划检索中'
+    : stage === 'route' ? '理解并规划中'
     : stage === 'eq' ? '设计调音中'
     : '思考中';
 }
@@ -1207,7 +1256,7 @@ function createThinkingNode({ stage = 'route' } = {}) {
   scrollToBottom();
   return record;
 }
-function finishThinkingNode(record) {
+function finishThinkingNode(record, { label } = {}) {
   if (!record || record.finished) return;
   record.finished = true;
   if (record.timer) clearInterval(record.timer);
@@ -1219,9 +1268,9 @@ function finishThinkingNode(record) {
     toggle.classList.add('done');
     const spinner = toggle.querySelector('.spinner');
     if (spinner) spinner.remove();
-    const label = toggle.querySelector('.stage-label');
+    const labelEl = toggle.querySelector('.stage-label');
     const elapsed = ((Date.now() - record.startTime) / 1000).toFixed(1);
-    if (label) label.textContent = `已思考 ${elapsed}s`;
+    if (labelEl) labelEl.textContent = label || `已思考 ${elapsed}s`;
     const elapsedEl = toggle.querySelector('.elapsed');
     if (elapsedEl) elapsedEl.textContent = '';
   }
@@ -1239,16 +1288,22 @@ function appendThinkingChunk(delta) {
   }
   scrollToBottom();
 }
-function setThinkingStage(stage) {
+function setThinkingStage(stage, detail) {
   const current = state.thinkingRecords[state.thinkingRecords.length - 1];
-  if (!current || current.finished) return createThinkingNode({ stage });
+  if (!current || current.finished) {
+    const record = createThinkingNode({ stage });
+    const label = record.node.querySelector('.stage-label');
+    if (label) label.textContent = stageLabel(stage, detail);
+    setRunningUI(true);
+    return;
+  }
   current.stage = stage;
   const label = current.node.querySelector('.stage-label');
-  if (label) label.textContent = stageLabel(stage);
+  if (label) label.textContent = stageLabel(stage, detail);
 }
-function finishThinking() {
+function finishThinking(options) {
   for (const rec of state.thinkingRecords) {
-    if (!rec.finished) finishThinkingNode(rec);
+    if (!rec.finished) finishThinkingNode(rec, options);
   }
   setRunningUI(false);
 }
@@ -1263,20 +1318,30 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target === 'sidepanel' && msg.type === 'CHAT_STREAM_CHUNK') {
     const sid = msg.payload?.sessionId;
     if (sid && sid !== state.currentSession?.id) return;
+    if (state.stopped) return;
     appendThinkingChunk(msg.payload?.delta || '');
+    return;
+  }
+  if (msg.target === 'sidepanel' && msg.type === 'CHAT_PROGRESS') {
+    const sid = msg.payload?.sessionId;
+    if (sid && sid !== state.currentSession?.id) return;
+    if (state.stopped) return;
+    setThinkingStage(msg.payload?.stage || 'route', msg.payload?.detail);
     return;
   }
   if (msg.target === 'sidepanel' && msg.type === 'CHAT_THINKING_START') {
     const sid = msg.payload?.sessionId;
     if (sid && sid !== state.currentSession?.id) return;
+    if (state.stopped) return;
+    // 阶段事件代表「这一轮还在跑」：保持思考节点展开、停止按钮可见。
     setThinkingStage(msg.payload?.stage || 'route');
+    setRunningUI(true);
     return;
   }
   if (msg.target === 'sidepanel' && msg.type === 'CHAT_THINKING_END') {
     const sid = msg.payload?.sessionId;
     if (sid && sid !== state.currentSession?.id) return;
     finishThinking();
-    setRunningUI(false);
     return;
   }
 });

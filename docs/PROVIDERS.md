@@ -8,13 +8,15 @@ MoodTune 把「音乐从哪来」抽象成 `MusicProvider`。检索链路、对�
 
 | 方法 | 入参 | 返回 |
 | --- | --- | --- |
-| `searchTracks` | `{ keyword, limit?, offset?, order? }` | `{ tracks: Track[], total, via? }` |
-| `searchPlaylists` | `{ keyword, limit? }` | `PlaylistSummary[]` |
-| `getPlaylistTracks` | `(playlistId, { maxTracks? })` | `Track[]` |
-| `getUserPlaylists` | `{ limit?, offset? }` | `{ user: { uid, nickname }, playlists: PlaylistSummary[] }` |
-| `getArtistTracks` | `(artistName)` | `{ artist, tracks, albumsFound, failedAlbums, successPaths }` |
+| `searchTracks` | `{ keyword, limit?, offset?, order?, signal? }` | `{ tracks: Track[], total, via? }` |
+| `searchPlaylists` | `{ keyword, limit?, signal? }` | `PlaylistSummary[]` |
+| `getPlaylistTracks` | `(playlistId, { maxTracks?, signal? })` | `Track[]` |
+| `getUserPlaylists` | `{ limit?, offset?, signal? }` | `{ user: { uid, nickname }, playlists: PlaylistSummary[] }` |
+| `getArtistTracks` | `(artistName, { signal? })` | `{ artist, tracks, albumsFound, failedAlbums, successPaths }` |
 | `resolveStreamUrl` | `(track)` | `string`（可直接喂给 `<audio>` 的地址） |
 | `pauseExternalPlayback` | —— | `Promise<void>`（可选） |
+
+`signal` 是用户点「中断」时传下来的 `AbortSignal`。实现必须把它透传给 HTTP 请求，并在分批/分页循环里检查；中止时抛 `name === 'AbortError'` 的错误，**不要**被自己的兜底 catch 当成普通失败吞掉（用 `src/core/abort.js` 的 `isAbortError` / `throwIfAborted`）。
 
 另外两个字段：
 

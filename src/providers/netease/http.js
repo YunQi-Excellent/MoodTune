@@ -1,3 +1,4 @@
+import { abortError, isAbortError } from '../../core/abort.js';
 import { NETEASE_BASE_URL } from './constants.js';
 
 /**
@@ -37,7 +38,8 @@ export function createHttpClient({
     try {
       response = await fetchImpl(url.toString(), { credentials, headers, signal });
     } catch (error) {
-      if (error?.name === 'AbortError') throw error;
+      // 中止要原样向上抛，否则会被调用方的兜底逻辑当成普通网络错误继续回退。
+      if (isAbortError(error) || signal?.aborted) throw abortError();
       throw new Error(`[netease] 请求失败：${error?.message || error}`, { cause: error });
     }
 
@@ -48,8 +50,10 @@ export function createHttpClient({
     let data;
     try {
       data = await response.json();
-    } catch {
-      throw new Error(`[netease] ${url.pathname} 返回非 JSON`);
+    } catch (error) {
+      // 响应体读到一半被中断时，fetch 抛的是 AbortError 而不是 JSON 解析错误。
+      if (isAbortError(error) || signal?.aborted) throw abortError();
+      throw new Error(`[netease] ${url.pathname} 返回非 JSON`, { cause: error });
     }
 
     if (typeof data?.code === 'number' && data.code !== expectCode) {

@@ -398,6 +398,51 @@ html.dark .thinking-toggle { color: var(--yellow-500); }
 @keyframes blink { to { opacity: 0; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* 持久化的思考记录（挂在 plan-card / error 上） */
+.thinking-history {
+  margin-bottom: 10px;
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  background: var(--soft-bg);
+  overflow: hidden;
+}
+.thinking-history-toggle {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  color: var(--yellow-600);
+  font-size: 12px; font-weight: 600;
+}
+.thinking-history-toggle::-webkit-details-marker { display: none; }
+html.dark .thinking-history-toggle { color: var(--yellow-500); }
+.thinking-history-toggle:hover { background: var(--soft-hover); }
+.thinking-history-toggle .chevron {
+  display: inline-block;
+  transition: transform 0.2s;
+  color: var(--yellow-500);
+  font-size: 9px;
+}
+.thinking-history[open] .thinking-history-toggle .chevron { transform: rotate(90deg); }
+.thinking-history-elapsed {
+  margin-left: auto;
+  color: var(--fg-3);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.thinking-history-content {
+  padding: 0 14px 12px;
+  color: var(--fg-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
 /* 计划卡片 */
 .plan-header {
   display: flex; align-items: center; justify-content: space-between;
@@ -430,6 +475,7 @@ html.dark .badge.yellow {
   background: rgba(245, 158, 11, 0.14);
 }
 .stats-line {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
   font-size: 11px; color: var(--fg-2);
   padding: 6px 10px;
   background: var(--soft-bg);
@@ -437,6 +483,19 @@ html.dark .badge.yellow {
   margin-bottom: 8px;
   border: 1px solid var(--border);
 }
+.stats-line > span { flex: 1; min-width: 0; }
+/* 统计行右侧的小快捷操作（全选 / 取消全选） */
+.link-btn {
+  flex-shrink: 0;
+  border: 0; background: none; padding: 0;
+  font: inherit; font-size: 11px; font-weight: 600;
+  color: var(--brand-600);
+  cursor: pointer;
+  border-radius: 6px;
+}
+.link-btn:hover { text-decoration: underline; }
+.link-btn:disabled { color: var(--fg-3); cursor: default; text-decoration: none; }
+html.dark .link-btn { color: var(--brand-400); }
 .stats-line.yellow {
   background: var(--yellow-50);
   border-color: rgba(245, 158, 11, 0.25);
@@ -643,6 +702,12 @@ html.dark .eq-slider .value { color: var(--yellow-500); }
 .error-card {
   display: flex; gap: 8px; align-items: flex-start;
   color: var(--danger);
+}
+.error-meta {
+  margin-top: 6px;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ========================================================

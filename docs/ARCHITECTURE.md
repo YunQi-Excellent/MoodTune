@@ -47,20 +47,35 @@ Offscreen 之所以被隔离，是因为 MV3 的 service worker 随时可能被�
 sidepanel            background                      agent                       provider
    │ chatStart ────────▶ chat handler
    │ ◀──── { ok: true }       │ chat.start()
-   │                         │ ──▶ route()  ROUTER_SYSTEM 判定 mode
-   │ ◀── THINKING_START ─────│
+   │                         │ ──▶ extractUserQuery()  EXTRACT_SYSTEM（并行）
+   │                         │ ──▶ decide()  DECIDE_SYSTEM（意图 + 检索计划，一次调用）
+   │                         │      ├─ 原文直搜命中？──▶ searchTracks（相关性排序）
+   │                         │      │    └─ 命中 → 直接出 plan-card（跳过决策/挖歌单/精排）
+   │                         │      └─ 未命中 → 用 decide 带回的 queries 继续
    │                         │ ──▶ search()
-   │                         │      ├─ PLANNER_SYSTEM → normalizePlan()
-   │                         │      ├─ executeQuery() ──────────────────────▶ searchTracks / …
+   │                         │      ├─ runQueries()  并发 executeQuery() ──▶ searchTracks / …
    │                         │      ├─ dedupByWeight() + coarseFilter()
-   │                         │      ├─ RERANK_SYSTEM → selectPicks()
+   │                         │      ├─ 剩余预算 ≥ 6s 才跑 RERANK_SYSTEM → selectPicks()
    │ ◀── CHAT_PROGRESS ──────│
    │ ◀── THINKING_END ───────│
    │                         │ ──▶ sessions.appendMessage({ kind: 'plan-card' })
 ```
 
+- **意图判定和检索规划合并成一次调用**（[DECIDE_SYSTEM](../src/agent/prompts.js)）：原来的 `route()` + `PLANNER_SYSTEM` 是两次模型往返，氛围类需求光这一步就要 5~10s。合并后只调一次，且提示词要求**纯 JSON、不写分析文字**，输出 token 大幅减少。解析失败/超时退回「用原话搜一次」，不写错误卡片。
+- **原文直搜是最短路径**：抽取提示词只做「把用户原话里要点名检索的片段原样截出来」，不负责改写。命中判定见 [literal.js](../src/agent/literal.js)：检索核心词落在歌名/专辑/歌手里即视为命中（`酒神op` → 《霓虹下的酒神》）。命中后不再决策、不挖歌单、不精排，直接出结果。
+  - 第一枪打原话；没命中再用剥掉 `op/ed/ost/主题曲` 与连接词的核心词搜一次（`P4D的op` → `p4d`）。平台会把「的」「op」当独立词，直接用原话搜只会返回一堆钢琴练习曲。
+  - 直搜命中时立刻中止那次决策调用，不再等它，也不让它的文字继续往思考节点里灌。
+- **「再找一些」是追加，不是重来**：决策模型输出 `carryOver`，agent 取会话里**最后一张结果卡**的候选（已经进歌单的不算），把它们的 id 一并加进新检索的排除集，最后把「上轮保留 + 本轮新增」合成一张卡（总量封顶 20）。一条都没新增时只回一条文字提示，不重复渲染整张卡片。直搜结果如果和上一轮完全重合，也不会短路，而是等决策走追加。
+- **检索动作并发执行**（默认 3 路）：`runQueries()` 用工作池跑 `plan.queries`，任何一路失败只丢这一路。串行执行时 5 条 query × 挖歌单会把预算吃干。
+- **挖歌单有硬上限**：单条 `searchPlaylists` / `myPlaylists` 最多挖 4 个歌单、每个 150 首（[INTENT_CONFIG](../src/core/constants.js)），规划出的 `limit: 20 / 500` 会被强制收窄。
+- **一次检索有硬预算**（默认 30s，从用户按下发送开始算）：决策、抽取、执行、精排共享同一个截止时间；决策单独封顶 15s 且不超过剩余预算。超时就中止并说明**卡在哪个阶段**（「模型决策阶段就用完预算」≠「检索超时」）。
+- **精排要留够时间**：执行完如果剩余预算不足 6s，直接按已召回候选出结果（`stats.rerankSkipped`），不硬跑一次必超时的精排。
+- **阶段耗时会写进结果**：`thinking.timings` 记录 `decide / execute / rerank` 各自用时，随思考记录一起展示，错误卡片上也会直接显示，方便判断是模型慢还是检索慢。
+- **结果卡可以直接全选/清空**：卡片统计行右侧的按钮只切换勾选状态（不发请求），确认后再点「加入歌单」。
+- **思考记录会持久化**：流式文本（含推理模型的 `reasoning_content`）另行收集一份，随 `plan-card` / `eq-card` / `error` 的 `thinking` 字段落库（头 1200 + 尾 2800 字）；模型什么都没吐时用阶段耗时兜底，卡片永远不会是一条点不开的空记录。重载侧边栏后在卡片里展开即可回看，不依赖实时 DOM。
 - `chatAgent.start()` **不阻塞响应**：处理器立刻回 `{ ok: true }`，进度通过 `CHAT_*` 事件推进。
-- 中止由 agent 自己持有 `AbortController`，`start()` 会顶掉上一轮；中止后不再写错误卡片。
+- 一次检索只在真正结束时发一次 `CHAT_THINKING_END`；中间的 `execute / rerank` 用 `CHAT_THINKING_START` 切换阶段。提前发结束事件会让侧边栏收起中断按钮，用户在长时间挖歌时就没法停止了。
+- 中止由 agent 自己持有 `AbortController`，`start()` 会顶掉上一轮；中止后不再写错误卡片。`signal` 会一路传给 `executeQuery → provider → HTTP`，正在跑的检索和分批拉取会立刻取消，而不是等它自己跑完。
 - 所有对侧边栏的事件统一走 `notify()`（即 `forwardToSidepanel`）。
 
 ### 播放与调音

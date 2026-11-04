@@ -30,5 +30,7 @@ export async function tuneEq({ llm, userNeed, currentEq, onChunk, signal } = {})
   return {
     eq: normalizeEq(parsed.eq),
     reason: String(parsed.reason || '').slice(0, 200),
+    // 原始流式文本，调用方可以选择持久化下来当思考记录。
+    raw,
   };
 }

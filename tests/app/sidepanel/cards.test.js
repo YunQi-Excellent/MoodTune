@@ -49,6 +49,104 @@ describe('renderPlanCard', () => {
     expect(html).toContain('3:45');
   });
 
+  it('原文直搜的结果会标出来源', () => {
+    const html = renderPlanCard(
+      { id: 'msg-3', picks, stats: { total: 2, filtered: 2, direct: true } },
+      { cartIds: new Set() },
+    );
+
+    expect(html).toContain('候选 2 首 · 精排 2 首 · 原文直搜');
+  });
+
+  it('卡片带「全选 / 取消全选」快捷按钮', () => {
+    const html = renderPlanCard({ id: 'msg-7', picks, stats: {} }, { cartIds: new Set() });
+
+    expect(html).toContain('data-action="toggle-select-all"');
+    expect(html).toContain('取消全选');
+  });
+
+  it('候选全在歌单里时按钮变灰并显示「全选」', () => {
+    const html = renderPlanCard(
+      { id: 'msg-8', picks, stats: {} },
+      { cartIds: new Set([1, 2]) },
+    );
+
+    expect(html).toContain('disabled>全选');
+  });
+
+  it('追加检索会标出承接了多少首', () => {
+    const html = renderPlanCard(
+      { id: 'msg-9', picks, stats: { total: 6, filtered: 6, carried: 3, added: 4 } },
+      { cartIds: new Set() },
+    );
+
+    expect(html).toContain('含上轮 3 首');
+  });
+
+  it('预算不足跳过精排时会标出来', () => {
+    const html = renderPlanCard(
+      { id: 'msg-6', picks, stats: { total: 20, filtered: 8, rerankSkipped: true } },
+      { cartIds: new Set() },
+    );
+
+    expect(html).toContain('未精排');
+  });
+
+  it('持久化的思考记录可以展开查看，并带耗时', () => {
+    const html = renderPlanCard(
+      {
+        id: 'msg-4',
+        picks,
+        stats: { total: 2, filtered: 2 },
+        thinking: { text: '先看节奏，再挑人声。\n```json\n{"picks":[]}\n```', elapsedMs: 12300 },
+      },
+      { cartIds: new Set() },
+    );
+
+    expect(html).toContain('class="thinking-history"');
+    expect(html).toContain('思考记录');
+    expect(html).toContain('12.3s');
+    expect(html).toContain('先看节奏，再挑人声。');
+  });
+
+  it('实时思考节点还在时，卡片不重复渲染思考记录', () => {
+    const html = renderPlanCard(
+      { id: 'msg-5', picks, stats: {}, thinking: { text: '实时已展示' } },
+      { cartIds: new Set(), showThinking: false },
+    );
+
+    expect(html).not.toContain('class="thinking-history"');
+  });
+
+  it('错误卡片也能保留思考记录', () => {
+    const html = renderAgentBody({
+      kind: 'error',
+      text: '检索超时',
+      thinking: { text: '规划阶段就被截断' },
+    });
+
+    expect(html).toContain('class="thinking-history"');
+    expect(html).toContain('规划阶段就被截断');
+    expect(html).toContain('检索超时');
+  });
+
+  it('错误卡片直接展示阶段耗时，指明慢在哪一步', () => {
+    const html = renderAgentBody({
+      kind: 'error',
+      text: '检索超时（30 秒），已停止。',
+      timingsText: '规划 21.4s · 检索 8.1s',
+      thinking: { text: '阶段耗时：规划 21.4s · 检索 8.1s' },
+    });
+
+    expect(html).toContain('class="error-meta"');
+    expect(html).toContain('阶段耗时：规划 21.4s · 检索 8.1s');
+  });
+
+  it('没有阶段耗时时不渲染空行', () => {
+    const html = renderAgentBody({ kind: 'error', text: '失败了' });
+    expect(html).not.toContain('class="error-meta"');
+  });
+
   it('已在会话歌单的候选被禁用并标注', () => {
     const html = renderPlanCard(
       { id: 'msg-2', picks, stats: {} },
@@ -87,6 +185,17 @@ describe('renderEqCard', () => {
     expect(html).toContain('data-eq-band="preamp"');
     expect(html).toContain('data-msg-id="msg-9"');
     expect(html).toContain('1 kHz');
+  });
+
+  it('调音卡片也能带持久化的思考记录', () => {
+    const html = renderEqCard({
+      id: 'msg-10',
+      eq: { preampDb: 0, bands: [] },
+      thinking: { text: '先把 250Hz 收一点，避免发闷' },
+    });
+
+    expect(html).toContain('class="thinking-history"');
+    expect(html).toContain('先把 250Hz 收一点，避免发闷');
   });
 
   it('理由会转义，缺省时不渲染', () => {

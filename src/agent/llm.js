@@ -21,12 +21,33 @@ export function createLLMClient({
 
   /**
    * @param {{ role: string, content: string }[]} messages
-   * @param {{ onChunk?: (delta: string) => void, signal?: AbortSignal }} [options]
+   * @param {{
+   *   onChunk?: (delta: string) => void,
+   *   onReasoning?: (delta: string) => void,
+   *   signal?: AbortSignal,
+   *   maxTokens?: number,
+   *   temperature?: number,
+   * }} [options]
    * @returns {Promise<string>} 完整文本
    */
-  async function stream(messages, { onChunk = () => {}, signal } = {}) {
+  async function stream(messages, {
+    onChunk = () => {},
+    onReasoning = () => {},
+    signal,
+    maxTokens,
+    temperature: callTemperature,
+  } = {}) {
     const config = await getConfig();
     if (!config) throw new Error('未配置大模型');
+
+    const body = {
+      model: config.model,
+      messages,
+      temperature: callTemperature ?? temperature,
+      stream: true,
+    };
+    // 抽取/路由这类短任务必须限制输出长度，否则模型会自由发挥，延迟不可控。
+    if (Number.isFinite(maxTokens) && maxTokens > 0) body.max_tokens = maxTokens;
 
     const response = await fetchImpl(config.endpoint, {
       method: 'POST',
@@ -34,12 +55,7 @@ export function createLLMClient({
         'content-type': 'application/json',
         authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify({
-        model: config.model,
-        messages,
-        temperature,
-        stream: true,
-      }),
+      body: JSON.stringify(body),
       signal,
     });
 
@@ -51,22 +67,26 @@ export function createLLMClient({
     const contentType = response.headers.get('content-type') || '';
     if (!contentType.includes('event-stream')) {
       const data = await response.json();
-      const content = data?.choices?.[0]?.message?.content || '';
+      const message = data?.choices?.[0]?.message || {};
+      const reasoning = message.reasoning_content || message.reasoning || '';
+      if (reasoning) onReasoning(reasoning);
+      const content = message.content || '';
       if (content) onChunk(content);
       return content;
     }
 
-    return readEventStream(response.body, onChunk);
+    return readEventStream(response.body, onChunk, onReasoning);
   }
 
   return { stream };
 }
 
 /**
- * 逐块读取 SSE 响应，把 `choices[0].delta.content` 增量交给 onChunk。
+ * 逐块读取 SSE 响应，把 `choices[0].delta.content` 增量交给 onChunk，
+ * `delta.reasoning_content`（推理模型的思考流）交给 onReasoning。
  * 单独导出便于直接对解析逻辑做单元测试。
  */
-export async function readEventStream(body, onChunk) {
+export async function readEventStream(body, onChunk, onReasoning = () => {}) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -81,6 +101,8 @@ export async function readEventStream(body, onChunk) {
     buffer = lines.pop() || '';
 
     for (const line of lines) {
+      const reasoning = parseReasoningLine(line);
+      if (reasoning) onReasoning(reasoning);
       const delta = parseDataLine(line);
       if (!delta) continue;
       full += delta;
@@ -89,6 +111,23 @@ export async function readEventStream(body, onChunk) {
   }
 
   return full;
+}
+
+/** 解析一行 `data: {...}` 里的推理增量；非数据行或没有推理字段返回空串。 */
+export function parseReasoningLine(line) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed.startsWith('data:')) return '';
+
+  const data = trimmed.slice(5).trim();
+  if (!data || data === '[DONE]') return '';
+
+  try {
+    const parsed = JSON.parse(data);
+    const delta = parsed?.choices?.[0]?.delta;
+    return delta?.reasoning_content || delta?.reasoning || '';
+  } catch {
+    return '';
+  }
 }
 
 /** 解析一行 `data: {...}`，返回增量文本；非数据行或坏数据返回空串。 */

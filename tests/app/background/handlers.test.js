@@ -9,7 +9,7 @@ import { createSessionHandlers } from '../../../src/app/background/handlers/sess
 
 describe('chat handlers', () => {
   function setup() {
-    const chat = { start: vi.fn(), abort: vi.fn() };
+    const chat = { start: vi.fn(), abort: vi.fn(() => true) };
     const sessions = { current: vi.fn(async () => ({ id: 'sess-1' })) };
     const forward = vi.fn();
     return {
@@ -43,9 +43,17 @@ describe('chat handlers', () => {
   it('chatAbort 中止并把当前会话一起告知侧边栏', async () => {
     const { handlers, chat, forward } = setup();
 
-    await expect(handlers.chatAbort({})).resolves.toEqual({ ok: true });
+    await expect(handlers.chatAbort({})).resolves.toEqual({ ok: true, aborted: true });
     expect(chat.abort).toHaveBeenCalled();
     expect(forward).toHaveBeenCalledWith('CHAT_THINKING_END', { sessionId: 'sess-1', aborted: true });
+  });
+
+  it('没有在跑的任务时不广播结束事件', async () => {
+    const { handlers, chat, forward } = setup();
+    chat.abort.mockReturnValue(false);
+
+    await expect(handlers.chatAbort({})).resolves.toEqual({ ok: true, aborted: false });
+    expect(forward).not.toHaveBeenCalled();
   });
 });
 

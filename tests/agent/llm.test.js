@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createLLMClient, parseDataLine, readEventStream } from '../../src/agent/llm.js';
+import {
+  createLLMClient,
+  parseDataLine,
+  parseReasoningLine,
+  readEventStream,
+} from '../../src/agent/llm.js';
 
 const CONFIG = { endpoint: 'https://llm.test/v1/chat', model: 'mock', apiKey: 'sk-test' };
 
@@ -62,6 +67,16 @@ describe('createLLMClient', () => {
       stream: true,
       messages: [{ role: 'user', content: 'hi' }],
     });
+  });
+
+  it('短任务可以限制输出长度与温度', async () => {
+    const { client, fetchImpl } = setup(jsonResponse('{}'));
+
+    await client.stream([], { maxTokens: 80, temperature: 0 });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.max_tokens).toBe(80);
+    expect(body.temperature).toBe(0);
   });
 
   it('非流式响应一次性回传内容', async () => {
@@ -127,5 +142,49 @@ describe('parseDataLine', () => {
     expect(parseDataLine('data: {oops')).toBe('');
     expect(parseDataLine('data: {"choices":[{"delta":{}}]}')).toBe('');
     expect(parseDataLine('')).toBe('');
+  });
+});
+
+describe('推理模型流', () => {
+  it('reasoning_content 单独回调，不混进正文', async () => {
+    const { client } = setup(sseResponse([
+      'data: {"choices":[{"delta":{"reasoning_content":"先想一下"}}]}\n',
+      'data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"}}]}\n',
+    ]));
+    const content = [];
+    const reasoning = [];
+
+    const result = await client.stream([], {
+      onChunk: chunk => content.push(chunk),
+      onReasoning: chunk => reasoning.push(chunk),
+    });
+
+    expect(reasoning).toEqual(['先想一下']);
+    expect(content).toEqual(['{"ok":true}']);
+    // 正文只包含答案，JSON 解析不会被思考过程污染。
+    expect(result).toBe('{"ok":true}');
+  });
+
+  it('非流式响应里的 reasoning_content 也会回调', async () => {
+    const onReasoning = vi.fn();
+    const { client } = setup({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ choices: [{ message: { reasoning_content: '想一想', content: '答案' } }] }),
+      text: async () => '',
+    });
+
+    await expect(client.stream([], { onReasoning })).resolves.toBe('答案');
+    expect(onReasoning).toHaveBeenCalledWith('想一想');
+  });
+
+  it('parseReasoningLine 只认推理字段', () => {
+    expect(parseReasoningLine('data: {"choices":[{"delta":{"reasoning_content":"想"}}]}')).toBe('想');
+    expect(parseReasoningLine('data: {"choices":[{"delta":{"reasoning":"想"}}]}')).toBe('想');
+    expect(parseReasoningLine('data: {"choices":[{"delta":{"content":"答案"}}]}')).toBe('');
+    expect(parseReasoningLine('data: [DONE]')).toBe('');
+    expect(parseReasoningLine('event: ping')).toBe('');
+    expect(parseReasoningLine('')).toBe('');
   });
 });

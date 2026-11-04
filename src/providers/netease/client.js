@@ -1,3 +1,4 @@
+import { abortError, isAbortError, throwIfAborted } from '../../core/abort.js';
 import { NETEASE_DEFAULTS } from './constants.js';
 
 /** @param {number} ms */
@@ -14,13 +15,14 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
     throw new Error('createNeteaseClient 需要 http 客户端');
   }
 
-  async function getAccount() {
-    return http.requestJson('/api/nuser/account/get');
+  async function getAccount({ signal } = {}) {
+    return http.requestJson('/api/nuser/account/get', { signal });
   }
 
-  async function getUserPlaylists(uid, { limit = 1000, offset = 0 } = {}) {
+  async function getUserPlaylists(uid, { limit = 1000, offset = 0, signal } = {}) {
     const data = await http.requestJson('/api/user/playlist', {
       params: { uid, limit, offset },
+      signal,
     });
     return Array.isArray(data?.playlist) ? data.playlist : [];
   }
@@ -29,18 +31,21 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
     limit = NETEASE_DEFAULTS.searchLimit,
     offset = 0,
     order = 'hot',
+    signal,
   } = {}) {
     const params = { s: keyword, type: 1, limit, offset };
     if (order) params.order = order;
-    return http.requestJson('/api/cloudsearch/get/web', { params });
+    return http.requestJson('/api/cloudsearch/get/web', { params, signal });
   }
 
   async function searchLegacy(keyword, {
     limit = NETEASE_DEFAULTS.searchLimit,
     offset = 0,
+    signal,
   } = {}) {
     return http.requestJson('/api/search/get/web', {
       params: { s: keyword, type: 1, limit, offset },
+      signal,
     });
   }
 
@@ -53,6 +58,7 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
         via: 'cloudsearch',
       };
     } catch (cloudError) {
+      if (isAbortError(cloudError) || options.signal?.aborted) throw abortError();
       try {
         const data = await searchLegacy(keyword, options);
         return {
@@ -61,6 +67,7 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
           via: 'search/get',
         };
       } catch (legacyError) {
+        if (isAbortError(legacyError) || options.signal?.aborted) throw abortError();
         throw new Error(
           `[netease] 搜索失败：${cloudError?.message || cloudError}；回退也失败：${legacyError?.message || legacyError}`,
           { cause: legacyError },
@@ -69,24 +76,27 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
     }
   }
 
-  async function searchPlaylists(keyword, { limit = NETEASE_DEFAULTS.playlistLimit } = {}) {
+  async function searchPlaylists(keyword, { limit = NETEASE_DEFAULTS.playlistLimit, signal } = {}) {
     const data = await http.requestJson('/api/search/get/web', {
       params: { s: keyword, type: 1000, limit, offset: 0 },
+      signal,
     });
     return Array.isArray(data?.result?.playlists) ? data.result.playlists : [];
   }
 
-  async function getPlaylistDetail(playlistId) {
+  async function getPlaylistDetail(playlistId, { signal } = {}) {
     const data = await http.requestJson('/api/v6/playlist/detail', {
       params: { id: playlistId, n: 1000, s: 8 },
+      signal,
     });
     return data?.playlist || null;
   }
 
-  async function getSongDetails(ids) {
+  async function getSongDetails(ids, { signal } = {}) {
     if (!Array.isArray(ids) || ids.length === 0) return [];
     const data = await http.requestJson('/api/v3/song/detail', {
       params: { c: JSON.stringify(ids.map(id => ({ id }))) },
+      signal,
     });
     return Array.isArray(data?.songs) ? data.songs : [];
   }
@@ -95,8 +105,10 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
     maxTracks = NETEASE_DEFAULTS.playlistTracksMax,
     batchSize = NETEASE_DEFAULTS.batchSize,
     pauseMs = NETEASE_DEFAULTS.batchPauseMs,
+    signal,
   } = {}) {
-    const playlist = await getPlaylistDetail(playlistId);
+    throwIfAborted(signal);
+    const playlist = await getPlaylistDetail(playlistId, { signal });
     const trackIds = Array.isArray(playlist?.trackIds) ? playlist.trackIds : [];
     if (trackIds.length === 0) throw new Error('歌单 trackIds 为空');
 
@@ -109,16 +121,21 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
 
     const songs = [];
     for (let index = 0; index < ids.length; index += size) {
-      const batch = await getSongDetails(ids.slice(index, index + size));
+      throwIfAborted(signal);
+      const batch = await getSongDetails(ids.slice(index, index + size), { signal });
       songs.push(...batch);
-      if (index + size < ids.length) await sleep(pauseMs);
+      if (index + size < ids.length) {
+        await sleep(pauseMs);
+        throwIfAborted(signal);
+      }
     }
     return songs;
   }
 
-  async function findArtist(name) {
+  async function findArtist(name, { signal } = {}) {
     const data = await http.requestJson('/api/search/get/web', {
       params: { s: name, type: 100, limit: 10, offset: 0 },
+      signal,
     });
     const artists = Array.isArray(data?.result?.artists) ? data.result.artists : [];
     if (artists.length === 0) throw new Error(`没有找到歌手「${name}」`);
@@ -129,14 +146,17 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
     maxPages = NETEASE_DEFAULTS.artistMaxPages,
     limit = NETEASE_DEFAULTS.artistPageSize,
     pauseMs = NETEASE_DEFAULTS.artistPauseMs,
+    signal,
   } = {}) {
     const albums = [];
     const seen = new Set();
     let offset = 0;
 
     for (let page = 0; page < maxPages; page++) {
+      throwIfAborted(signal);
       const data = await http.requestJson(`/api/artist/albums/${artistId}`, {
         params: { offset, limit },
+        signal,
       });
       const batch = data?.hotAlbums || data?.albums || (Array.isArray(data) ? data : []);
       if (!Array.isArray(batch) || batch.length === 0) break;
@@ -150,6 +170,7 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
       if (batch.length < limit) break;
       offset += limit;
       await sleep(pauseMs);
+      throwIfAborted(signal);
     }
     return albums;
   }
@@ -158,14 +179,17 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
     maxPages = NETEASE_DEFAULTS.artistMaxPages,
     limit = NETEASE_DEFAULTS.artistPageSize,
     pauseMs = NETEASE_DEFAULTS.artistPauseMs,
+    signal,
   } = {}) {
     const albums = [];
     const seen = new Set();
     let offset = 0;
 
     for (let page = 0; page < maxPages; page++) {
+      throwIfAborted(signal);
       const data = await http.requestJson('/api/search/get/web', {
         params: { s: artistName, type: 10, limit, offset },
+        signal,
       });
       const batch = Array.isArray(data?.result?.albums) ? data.result.albums : [];
       if (batch.length === 0) break;
@@ -185,6 +209,7 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
       if (added === 0) break;
       offset += limit;
       await sleep(pauseMs);
+      throwIfAborted(signal);
     }
     return albums;
   }
@@ -193,16 +218,21 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
     let albums = [];
     try {
       albums = await getArtistAlbumsViaApi(artistId, options);
-    } catch {}
+    } catch (error) {
+      if (isAbortError(error) || options.signal?.aborted) throw abortError();
+    }
     if (albums.length === 0 && artistName) {
+      throwIfAborted(options.signal);
       try {
         albums = await getArtistAlbumsViaSearch(artistName, artistId, options);
-      } catch {}
+      } catch (error) {
+        if (isAbortError(error) || options.signal?.aborted) throw abortError();
+      }
     }
     return albums;
   }
 
-  async function getAlbum(albumId) {
+  async function getAlbum(albumId, { signal } = {}) {
     const paths = [
       `/api/v1/album/${albumId}`,
       `/api/album/${albumId}`,
@@ -211,8 +241,9 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
     let lastError = null;
 
     for (const path of paths) {
+      throwIfAborted(signal);
       try {
-        const data = await http.requestJson(path);
+        const data = await http.requestJson(path, { signal });
         const songs = data?.songs || data?.album?.songs || [];
         if (!Array.isArray(songs) || songs.length === 0) {
           lastError = new Error('0 songs');
@@ -220,6 +251,7 @@ export function createNeteaseClient({ http, sleep = defaultSleep } = {}) {
         }
         return { album: data.album || {}, songs, via: path };
       } catch (error) {
+        if (isAbortError(error) || signal?.aborted) throw abortError();
         lastError = error;
       }
     }

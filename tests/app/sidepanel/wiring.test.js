@@ -55,3 +55,50 @@ describe('音效应用后的同步', () => {
     expect(body).toContain('updateEqPresetChips');
   });
 });
+
+/**
+ * 中断回归守卫：之前 agent 在规划后就发 THINKING_END，
+ * 侧边栏把停止按钮收起来，用户在长时间挖歌时完全没法中断。
+ */
+describe('中断', () => {
+  it('停止按钮与 Esc 都走同一个中断入口', () => {
+    expect(source).toContain("stopBtn.addEventListener('click', abortRunning)");
+    expect(source).toContain("e.key === 'Escape'");
+  });
+
+  it('中断入口会通知后台取消', () => {
+    expect(functionBody('abortRunning')).toContain('chatAbort');
+  });
+
+  it('思考阶段事件会保持运行态，不会把发送按钮换回来', () => {
+    const start = source.indexOf("msg.type === 'CHAT_THINKING_START'");
+    const end = source.indexOf("msg.type === 'CHAT_THINKING_END'");
+    const block = source.slice(start, end);
+
+    expect(block).toContain('setRunningUI(true)');
+  });
+
+  it('中断后忽略迟到的进度事件', () => {
+    expect(source).toContain('state.stopped');
+  });
+});
+
+/**
+ * 全选快捷按钮：卡片上直接能一键清空/全选，不用一个个点。
+ */
+describe('全选快捷按钮', () => {
+  it('点击只切换勾选状态，不同步写歌单', () => {
+    const start = source.indexOf("action === 'toggle-select-all'");
+    const end = source.indexOf("action === 'toggle-eq-presets'");
+    const block = source.slice(start, end);
+
+    expect(block).toContain('track-cb:not(:disabled)');
+    expect(block).toContain('syncSelectAllLabel');
+    expect(block).not.toContain('cartAdd');
+  });
+
+  it('单个勾选框变化时同步按钮文案', () => {
+    expect(source).toContain("closest('.track-cb')");
+    expect(functionBody('syncSelectAllLabel')).toContain('取消全选');
+  });
+});

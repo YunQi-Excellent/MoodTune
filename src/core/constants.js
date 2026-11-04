@@ -49,12 +49,20 @@ export const EFFECTS_CONFIG = Object.freeze({
 });
 
 export const INTENT_CONFIG = Object.freeze({
-  maxQueries: 8,
+  // 一次决策最多 5 条检索动作：并发执行 + 单条挖歌上限，防止规划出 8 条把预算吃光。
+  maxQueries: 5,
   maxTargetCount: 20,
+  // 单条 searchPlaylists 最多挖几个歌单、每个歌单最多取多少首。
+  playlistQueriesLimit: 4,
+  playlistTracksLimit: 150,
   coarseFilterMultiplier: 8,
   coarseFilterMin: 60,
   coarseFilterMax: 120,
   rerankReasonMaxLen: 60,
+  // 原文直搜的召回条数：只取平台相关性最高的前 N 首。
+  literalSearchLimit: 10,
+  // 一次检索的硬预算。超过就直接中止，不允许再出现跑十分钟的情况。
+  searchBudgetMs: 30000,
 });
 
 export const SESSION_CONFIG = Object.freeze({

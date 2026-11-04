@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { INTENT_CONFIG } from '../../src/core/constants.js';
 import {
   coarseFilter,
   dedupByWeight,
@@ -8,7 +9,6 @@ import {
   normalizeToolName,
   selectPicks,
 } from '../../src/agent/recommendation.js';
-import { INTENT_CONFIG } from '../../src/core/constants.js';
 
 const noSleep = async () => {};
 
@@ -168,8 +168,27 @@ describe('executeQuery', () => {
     const p = provider();
     const out = await executeQuery({ tool: 'searchPlaylists', keyword: '夜晚' }, p, { sleep: noSleep });
 
-    expect(p.searchPlaylists).toHaveBeenCalledWith({ keyword: '夜晚', limit: 5 });
+    expect(p.searchPlaylists).toHaveBeenCalledWith({ keyword: '夜晚', limit: 3 });
     expect(out).toEqual([{ id: 2, sourceWeight: 2 }, { id: 3, sourceWeight: 2 }]);
+  });
+
+  it('挖歌单的数量与曲目数被强制封顶', async () => {
+    const p = provider();
+    await executeQuery(
+      { tool: 'searchPlaylists', keyword: '夜晚', limit: 999, maxTracksPerPlaylist: 9999 },
+      p,
+      { sleep: noSleep },
+    );
+
+    expect(p.searchPlaylists).toHaveBeenCalledWith({
+      keyword: '夜晚',
+      limit: INTENT_CONFIG.playlistQueriesLimit,
+      signal: undefined,
+    });
+    expect(p.getPlaylistTracks).toHaveBeenCalledWith(
+      expect.anything(),
+      { maxTracks: INTENT_CONFIG.playlistTracksLimit, signal: undefined },
+    );
   });
 
   it('歌单挖取失败不影响整体', async () => {
@@ -193,12 +212,61 @@ describe('executeQuery', () => {
       .toEqual([]);
 
     const out = await executeQuery({ tool: 'fetchArtistAllSongs', artistName: '周杰伦' }, p, { sleep: noSleep });
-    expect(p.getArtistTracks).toHaveBeenCalledWith('周杰伦');
+    expect(p.getArtistTracks).toHaveBeenCalledWith('周杰伦', { signal: undefined });
     expect(out).toEqual([{ id: 4, sourceWeight: 1 }]);
   });
 
   it('未知工具抛错', async () => {
     await expect(executeQuery({ tool: 'rm-rf' }, provider())).rejects.toThrow('未知工具：rm-rf');
+  });
+
+  it('已中止时不再发起任何检索', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const p = provider();
+
+    await expect(executeQuery({ tool: 'searchTracks', keyword: 'x' }, p, {
+      sleep: noSleep,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(p.searchTracks).not.toHaveBeenCalled();
+  });
+
+  it('挖歌单被中止时立刻停止，不继续下一个歌单', async () => {
+    const controller = new AbortController();
+    const p = provider({
+      searchPlaylists: vi.fn(async () => [{ id: 'a' }, { id: 'b' }]),
+      getPlaylistTracks: vi.fn(async () => {
+        controller.abort();
+        throw Object.assign(new Error('已中止'), { name: 'AbortError' });
+      }),
+    });
+
+    await expect(executeQuery({ tool: 'searchPlaylists', keyword: 'x' }, p, {
+      sleep: noSleep,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(p.getPlaylistTracks).toHaveBeenCalledTimes(1);
+  });
+
+  it('中止不会被「单条失败不影响整体」的兜底吞掉', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const controller = new AbortController();
+    const p = provider({
+      searchPlaylists: vi.fn(async () => [{ id: 'a' }, { id: 'b' }]),
+      getPlaylistTracks: vi.fn(async () => {
+        controller.abort();
+        throw new Error('网络挂了');
+      }),
+    });
+
+    await expect(executeQuery({ tool: 'searchPlaylists', keyword: 'x' }, p, {
+      sleep: noSleep,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(p.getPlaylistTracks).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 
@@ -240,7 +308,25 @@ describe('executeMyPlaylistsQuery', () => {
     ]);
 
     const out = await executeMyPlaylistsQuery({}, p, { sleep: noSleep });
-    expect(p.getPlaylistTracks).toHaveBeenCalledWith('b', { maxTracks: 400 });
+    expect(p.getPlaylistTracks).toHaveBeenCalledWith('b', { maxTracks: 100, signal: undefined });
     expect(out).toHaveLength(1);
+  });
+
+  it('挖用户歌单被中止时立刻停止，不继续下一个', async () => {
+    const controller = new AbortController();
+    const p = provider([
+      { id: 'a', name: '一', trackCount: 3 },
+      { id: 'b', name: '二', trackCount: 3 },
+    ]);
+    p.getPlaylistTracks.mockImplementation(async () => {
+      controller.abort();
+      throw new Error('网络挂了');
+    });
+
+    await expect(executeMyPlaylistsQuery({}, p, {
+      sleep: noSleep,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(p.getPlaylistTracks).toHaveBeenCalledTimes(1);
   });
 });

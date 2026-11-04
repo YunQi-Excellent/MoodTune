@@ -49,6 +49,7 @@ describe('createNeteaseProvider', () => {
       limit: 10,
       offset: 0,
       order: 'hot',
+      signal: undefined,
     });
     expect(result.total).toBe(1);
     expect(result.via).toBe('cloudsearch');
@@ -86,7 +87,7 @@ describe('createNeteaseProvider', () => {
 
     const tracks = await provider.getPlaylistTracks(9001, { maxTracks: 50 });
 
-    expect(client.getPlaylistTracks).toHaveBeenCalledWith(9001, { maxTracks: 50 });
+    expect(client.getPlaylistTracks).toHaveBeenCalledWith(9001, { maxTracks: 50, signal: undefined });
     expect(tracks[0].key).toBe('netease:123');
   });
 
@@ -98,7 +99,7 @@ describe('createNeteaseProvider', () => {
 
     expect(result.user).toEqual({ uid: 7, nickname: 'Me' });
     expect(result.playlists[0].isOwn).toBe(true);
-    expect(client.getUserPlaylists).toHaveBeenCalledWith(7, { limit: 20, offset: 0 });
+    expect(client.getUserPlaylists).toHaveBeenCalledWith(7, { limit: 20, offset: 0, signal: undefined });
   });
 
   it('getArtistTracks 汇总专辑并去重', async () => {
@@ -113,8 +114,8 @@ describe('createNeteaseProvider', () => {
 
     const result = await provider.getArtistTracks('Aimer');
 
-    expect(client.findArtist).toHaveBeenCalledWith('Aimer');
-    expect(client.getArtistAlbums).toHaveBeenCalledWith(55, 'Aimer');
+    expect(client.findArtist).toHaveBeenCalledWith('Aimer', { signal: undefined });
+    expect(client.getArtistAlbums).toHaveBeenCalledWith(55, 'Aimer', { signal: undefined });
     expect(result.artist).toMatchObject({ id: 55, name: 'Aimer', albumCount: 9 });
     expect(result.albumsFound).toBe(1);
     expect(result.tracks).toHaveLength(1);
@@ -133,6 +134,23 @@ describe('createNeteaseProvider', () => {
     expect(result.failedAlbums).toEqual([
       { id: 77, name: 'Album', error: 'album down' },
     ]);
+  });
+
+  it('getArtistTracks 中止后不再继续拉专辑', async () => {
+    const controller = new AbortController();
+    const client = makeClient({
+      getArtistAlbums: vi.fn(async () => [rawAlbum, { ...rawAlbum, id: 78, name: 'Album 2' }]),
+      getAlbum: vi.fn(async () => {
+        controller.abort();
+        throw Object.assign(new Error('已中止'), { name: 'AbortError' });
+      }),
+    });
+    const provider = createNeteaseProvider({ client, sleep: async () => {} });
+
+    await expect(provider.getArtistTracks('Aimer', { signal: controller.signal }))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    // 第一张专辑就中止了，第二张不该再请求。
+    expect(client.getAlbum).toHaveBeenCalledTimes(1);
   });
 
   it('resolveStreamUrl 兼容 providerId 与 id', async () => {

@@ -1,3 +1,4 @@
+import { abortError, isAbortError, throwIfAborted } from '../../core/abort.js';
 import { listUserPlaylists } from './auth.js';
 import { createNeteaseClient, defaultSleep } from './client.js';
 import { createHttpClient } from './http.js';
@@ -28,11 +29,12 @@ export function createNeteaseProvider({ fetchImpl, http, client, sleep, external
     limit = NETEASE_DEFAULTS.searchLimit,
     offset = 0,
     order = 'hot',
+    signal,
   } = {}) {
     const term = String(keyword || '').trim();
     if (!term) throw new Error('搜索词不能为空');
 
-    const result = await netease.searchSongs(term, { limit, offset, order });
+    const result = await netease.searchSongs(term, { limit, offset, order, signal });
     return {
       tracks: result.songs.map(song => mapTrack(song)),
       total: result.songCount || 0,
@@ -40,20 +42,23 @@ export function createNeteaseProvider({ fetchImpl, http, client, sleep, external
     };
   }
 
-  async function searchPlaylists({ keyword, limit = NETEASE_DEFAULTS.playlistLimit } = {}) {
+  async function searchPlaylists({ keyword, limit = NETEASE_DEFAULTS.playlistLimit, signal } = {}) {
     const term = String(keyword || '').trim();
     if (!term) throw new Error('搜索词不能为空');
 
-    const playlists = await netease.searchPlaylists(term, { limit });
+    const playlists = await netease.searchPlaylists(term, { limit, signal });
     return playlists.map(playlist => mapPlaylistSummary(playlist));
   }
 
-  async function getPlaylistTracks(playlistId, { maxTracks = NETEASE_DEFAULTS.playlistTracksMax } = {}) {
+  async function getPlaylistTracks(playlistId, {
+    maxTracks = NETEASE_DEFAULTS.playlistTracksMax,
+    signal,
+  } = {}) {
     if (playlistId === undefined || playlistId === null || playlistId === '') {
       throw new Error('缺少歌单 ID');
     }
 
-    const songs = await netease.getPlaylistTracks(playlistId, { maxTracks });
+    const songs = await netease.getPlaylistTracks(playlistId, { maxTracks, signal });
     return songs.map(song => mapTrack(song));
   }
 
@@ -67,20 +72,21 @@ export function createNeteaseProvider({ fetchImpl, http, client, sleep, external
     };
   }
 
-  async function getArtistTracks(artistName) {
+  async function getArtistTracks(artistName, { signal } = {}) {
     const name = String(artistName || '').trim();
     if (!name) throw new Error('歌手名不能为空');
 
-    const artist = await netease.findArtist(name);
-    const albums = await netease.getArtistAlbums(artist.id, artist.name);
+    const artist = await netease.findArtist(name, { signal });
+    const albums = await netease.getArtistAlbums(artist.id, artist.name, { signal });
     const tracks = [];
     const seen = new Set();
     const failedAlbums = [];
     const successPaths = {};
 
     for (const albumSummary of albums) {
+      throwIfAborted(signal);
       try {
-        const { album, songs, via } = await netease.getAlbum(albumSummary.id);
+        const { album, songs, via } = await netease.getAlbum(albumSummary.id, { signal });
         successPaths[via] = (successPaths[via] || 0) + 1;
 
         for (const song of songs) {
@@ -93,6 +99,7 @@ export function createNeteaseProvider({ fetchImpl, http, client, sleep, external
           tracks.push(track);
         }
       } catch (error) {
+        if (isAbortError(error) || signal?.aborted) throw abortError();
         failedAlbums.push({
           id: albumSummary.id,
           name: albumSummary.name || '',
@@ -100,6 +107,7 @@ export function createNeteaseProvider({ fetchImpl, http, client, sleep, external
         });
       }
       await wait(NETEASE_DEFAULTS.artistPauseMs);
+      throwIfAborted(signal);
     }
 
     return {

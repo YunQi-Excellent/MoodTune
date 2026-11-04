@@ -50,6 +50,7 @@ export const SEARCH_KINDS = Object.freeze(['tracks', 'playlists', 'artists', 'us
  * @property {number} [limit]
  * @property {number} [offset]
  * @property {string} [order]
+ * @property {AbortSignal} [signal] 用户中断时用于取消平台请求
  */
 
 /**
@@ -75,10 +76,10 @@ export const SEARCH_KINDS = Object.freeze(['tracks', 'playlists', 'artists', 'us
  * @property {string} label
  * @property {ProviderCapabilities} capabilities
  * @property {(options: SearchTracksOptions) => Promise<SearchTracksResult>} searchTracks
- * @property {(options: {keyword: string, limit?: number}) => Promise<PlaylistSummary[]>} searchPlaylists
- * @property {(playlistId: number|string, options?: {maxTracks?: number}) => Promise<Track[]>} getPlaylistTracks
- * @property {(options?: {limit?: number, offset?: number}) => Promise<{user: UserSummary, playlists: PlaylistSummary[]}>} getUserPlaylists
- * @property {(artistName: string) => Promise<ArtistTracksResult>} getArtistTracks
+ * @property {(options: {keyword: string, limit?: number, signal?: AbortSignal}) => Promise<PlaylistSummary[]>} searchPlaylists
+ * @property {(playlistId: number|string, options?: {maxTracks?: number, signal?: AbortSignal}) => Promise<Track[]>} getPlaylistTracks
+ * @property {(options?: {limit?: number, offset?: number, signal?: AbortSignal}) => Promise<{user: UserSummary, playlists: PlaylistSummary[]}>} getUserPlaylists
+ * @property {(artistName: string, options?: {signal?: AbortSignal}) => Promise<ArtistTracksResult>} getArtistTracks
  * @property {(track: Track) => Promise<string>} resolveStreamUrl
  * @property {(() => Promise<void>)} [pauseExternalPlayback]
  */

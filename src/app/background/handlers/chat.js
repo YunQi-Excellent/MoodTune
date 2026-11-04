@@ -24,13 +24,16 @@ export function createChatHandlers({ chat, sessions, forwardToSidepanel }) {
     },
 
     chatAbort: async () => {
-      chat.abort();
+      // 没在跑时不广播结束事件，避免把下一轮的思考节点提前关掉。
+      const aborted = chat.abort();
       const session = await sessions.current();
-      forwardToSidepanel('CHAT_THINKING_END', {
-        sessionId: session?.id,
-        aborted: true,
-      });
-      return { ok: true };
+      if (aborted) {
+        forwardToSidepanel('CHAT_THINKING_END', {
+          sessionId: session?.id,
+          aborted: true,
+        });
+      }
+      return { ok: true, aborted };
     },
   };
 }
