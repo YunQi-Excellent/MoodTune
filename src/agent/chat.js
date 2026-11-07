@@ -23,7 +23,7 @@ const EXTRACT_TIMEOUT_MS = 10000;
 const LITERAL_TIMEOUT_MS = 6000;
 // 「意图 + 检索规划」合并成一次调用后，单次封顶 25 秒：
 // 这一档是给推理型模型留的——15 秒时它还在思考，被掐掉就只能走关键词兜底。
-// 仍然不能超过整轮 30 秒预算，超时后退回关键词检索。
+// 整轮预算 60 秒，剩下约 35 秒全部交给「执行 + 精排」，超时后退回关键词检索。
 const DECIDE_TIMEOUT_MS = 25000;
 // 检索动作并发数：太高会触发平台风控，太低等于串行。
 const EXECUTE_CONCURRENCY = 3;
@@ -445,6 +445,7 @@ export function createChatAgent({
     const budget = new AbortController();
     const scopedSignal = combineSignals(signal, budget.signal);
     const startedAt = now();
+    // 这里拿到的是「决策之后剩下的预算」：决策 25s 以外的部分全部给执行和精排。
     const budgetMs = Math.max(
       1,
       Math.min(searchBudgetMs, deadline ? deadline - startedAt : searchBudgetMs),

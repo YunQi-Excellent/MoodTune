@@ -612,6 +612,7 @@ describe('createChatAgent 检索', () => {
         const system = messages[0]?.content || '';
         if (system === EXTRACT_SYSTEM) return JSON.stringify({ query: '', specific: false });
         if (system === DECIDE_SYSTEM) {
+          // 决策吃掉 25s，整轮只剩 5s：不够一次精排。
           clock += 25_000;
           return decide({ queries: [{ tool: 'searchTracks', keyword: '雨天' }] });
         }
@@ -622,6 +623,7 @@ describe('createChatAgent 检索', () => {
       providers: defaultProviders(),
       llm,
       now: () => clock,
+      searchBudgetMs: 30_000,
     });
 
     await agent.start({ userNeed: '来点歌' });
@@ -629,6 +631,38 @@ describe('createChatAgent 检索', () => {
     const card = (await store.getCurrent()).messages.find(m => m.kind === 'plan-card');
     expect(card.stats.rerankSkipped).toBe(true);
     expect(card.picks.length).toBeGreaterThan(0);
+  });
+
+  it('决策花掉 25s 后，剩下的预算真的交给精排', async () => {
+    let clock = NOW;
+    const llm = {
+      stream: vi.fn(async (messages) => {
+        const system = messages[0]?.content || '';
+        if (system === EXTRACT_SYSTEM) return JSON.stringify({ query: '', specific: false });
+        if (system === DECIDE_SYSTEM) {
+          clock += 25_000;
+          return decide({ queries: [{ tool: 'searchTracks', keyword: '雨天' }], targetCount: 2 });
+        }
+        if (system === RERANK_SYSTEM) {
+          clock += 10_000;
+          return JSON.stringify({ picks: [{ id: '101', reason: '雨天合适' }] });
+        }
+        throw new Error('unexpected llm call');
+      }),
+    };
+    const { agent, store } = setup({
+      providers: defaultProviders(),
+      llm,
+      now: () => clock,
+    });
+
+    await agent.start({ userNeed: '来点雨天的歌' });
+
+    const card = (await store.getCurrent()).messages.find(m => m.kind === 'plan-card');
+    expect(card.stats.rerankSkipped).toBeFalsy();
+    expect(card.picks.map(pick => pick.id)).toEqual([101]);
+    // 25s 决策 + 10s 精排仍在默认 60s 预算内。
+    expect(clock).toBe(NOW + 35_000);
   });
 
   it('「再找一些」承接上一轮结果，只补进不在歌单里的新歌', async () => {

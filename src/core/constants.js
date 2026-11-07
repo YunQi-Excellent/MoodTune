@@ -62,7 +62,8 @@ export const INTENT_CONFIG = Object.freeze({
   // 原文直搜的召回条数：只取平台相关性最高的前 N 首。
   literalSearchLimit: 10,
   // 一次检索的硬预算。超过就直接中止，不允许再出现跑十分钟的情况。
-  searchBudgetMs: 30000,
+  // 其中决策独占 25s（推理型模型要时间），剩下的都留给「执行 + 精排」。
+  searchBudgetMs: 60000,
 });
 
 export const SESSION_CONFIG = Object.freeze({
