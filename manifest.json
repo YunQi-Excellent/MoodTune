@@ -3,8 +3,8 @@
   "name": "MoodTune",
   "version": "2.4.0",
   "description": "基于大模型的音乐推荐，适配网易云音乐",
+  "minimum_chrome_version": "116",
   "permissions": [
-    "cookies",
     "clipboardWrite",
     "storage",
     "unlimitedStorage",

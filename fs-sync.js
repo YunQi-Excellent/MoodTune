@@ -8,13 +8,22 @@
 // =====================================================
 
 import {
-  loadHandle, saveHandle, clearHandle,
+  loadHandle, clearHandle,
   queryPermissionOnly, ensureSubdir,
-  readJson, writeJson, fileExists, removeFile,
+  readJson, writeJson, removeFile,
 } from './fs-manager.js';
+import { storageQueue } from './src/app/storage/storage-queue.js';
 
-const APP_VERSION = '2.4.1';
 const FILE_VERSION = 1;
+
+/** 版本号只从 manifest 读，避免和 manifest.json / package.json 漂移。 */
+function getAppVersion() {
+  try {
+    return chrome.runtime.getManifest().version;
+  } catch {
+    return 'unknown';
+  }
+}
 
 const KEYS = {
   playlists: 'savedPlaylists',
@@ -141,7 +150,12 @@ export async function pullFromFolder() {
 
     const appliedKeys = Object.keys(updates);
     if (appliedKeys.length > 0) {
-      await chrome.storage.local.set(updates);
+      // 逐个 key 走 storage 队列：既避免和正在进行的读改写交错，
+      // 又不至于让一次恢复把整个存储锁住。
+      await Promise.all(appliedKeys.map(key => storageQueue.run(
+        key,
+        () => chrome.storage.local.set({ [key]: updates[key] }),
+      )));
     }
 
     lastSyncAt = Date.now();
@@ -252,7 +266,7 @@ export async function pushToFolder(opts = {}) {
     // 4) .meta.json
     await writeJson(handle, '.meta.json', {
       version: FILE_VERSION,
-      appVersion: APP_VERSION,
+      appVersion: getAppVersion(),
       lastSyncAt: Date.now(),
       sessionCount: sessions.length,
       playlistCount: playlists.length,

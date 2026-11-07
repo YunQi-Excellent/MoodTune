@@ -4,8 +4,8 @@
 // =====================================================
 
 import { saveHandle, clearHandle } from './fs-manager.js';
+import { $ } from './src/app/dom.js';
 
-const $ = s => document.querySelector(s);
 const statusEl = $('#status');
 
 function showStatus(text, kind = 'info') {

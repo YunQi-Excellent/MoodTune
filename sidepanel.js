@@ -1,37 +1,21 @@
-const $ = s => document.querySelector(s);
-const $$ = s => [...document.querySelectorAll(s)];
+import { EQ_FREQUENCIES } from './src/core/constants.js';
+import { defaultEffects, describeEffects } from './src/core/effects.js';
+import { defaultEq } from './src/core/eq.js';
+import { createId } from './src/core/ids.js';
+import {
+  BUILTIN_SOUND_PRESETS,
+  DEFAULT_SOUND_PRESET_ID,
+  findPresetByState,
+  groupSoundPresets,
+} from './src/core/sound-presets.js';
+
+import { $, $$ } from './src/app/dom.js';
+import { escapeHtml, fmtClock, fmtDate } from './src/app/sidepanel/format.js';
+import { renderAgentBody, renderPlanCard } from './src/app/sidepanel/cards.js';
+import { createPlayerControls } from './src/app/sidepanel/player.js';
 
 /* ================= 工具 ================= */
-const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g,
-  c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
-
-function fmtDuration(ms) {
-  if (!ms || ms <= 0) return '--:--';
-  const s = Math.round(ms / 1000);
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return `${m}:${String(r).padStart(2, '0')}`;
-}
-function fmtTime(sec) {
-  if (!Number.isFinite(sec) || sec < 0) return '0:00';
-  const m = Math.floor(sec / 60);
-  const r = Math.floor(sec % 60);
-  return `${m}:${String(r).padStart(2, '0')}`;
-}
-function fmtClock(ts) {
-  const d = new Date(ts);
-  const pad = n => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-function fmtDate(ts) {
-  if (!ts) return '';
-  const d = new Date(ts);
-  const pad = n => String(n).padStart(2, '0');
-  return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-function randId(p = 'id') {
-  return p + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
-}
+const randId = (prefix = 'id') => createId(prefix);
 async function sendMsg(msg) {
   try { return await chrome.runtime.sendMessage(msg); }
   catch (e) { console.warn('[sidepanel] sendMessage 失败', e); return null; }
@@ -45,24 +29,26 @@ async function copyText(text) {
   }
 }
 
-const EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
-
 /* ================= 状态 ================= */
 const state = {
   currentSession: null,
   sessions: [],
   eqPresets: [],
   savedPlaylists: [],
-  libraryTab: 'eq',
+  currentEq: null,
+  currentEffects: null,
+  libraryTab: 'sound',
   messageNodes: new Map(),
   thinkingRecords: [],
   running: false,
+  // 用户手动中断后忽略迟到的思考/进度事件，避免按钮又被重新点亮
+  stopped: false,
 };
 
 /* ================= Header ================= */
 $('#sessionBtn').addEventListener('click', openSessionDrawer);
 $('#cartBtn').addEventListener('click', openCartDrawer);
-$('#libraryBtn').addEventListener('click', openLibraryDrawer);
+$('#libraryBtn').addEventListener('click', () => openLibraryDrawer());
 $('#logBtn').addEventListener('click', openLogDrawer);
 $('#themeBtn').addEventListener('click', toggleTheme);
 $('#settingsBtn').addEventListener('click', () => chrome.runtime.openOptionsPage());
@@ -165,7 +151,7 @@ $('#sessionList').addEventListener('click', async e => {
           updateCartUI();
         }
         closeSessionDrawer();
-        refreshPlayer();
+        player.refresh();
       } else {
         pushLog('err', '恢复失败：' + (r?.error || '未知'));
       }
@@ -292,6 +278,16 @@ function renderCartList() {
   `).join('');
 }
 
+/** 根据当前勾选状态更新「全选 / 取消全选」按钮文案。 */
+function syncSelectAllLabel(node) {
+  if (!node) return;
+  const btn = node.querySelector('[data-action="toggle-select-all"]');
+  if (!btn) return;
+  const boxes = [...node.querySelectorAll('.track-cb:not(:disabled)')];
+  btn.disabled = boxes.length === 0;
+  btn.textContent = boxes.length > 0 && boxes.every(cb => cb.checked) ? '取消全选' : '全选';
+}
+
 function refreshPlanCards() {
   const messages = state.currentSession?.messages || [];
   for (const m of messages) {
@@ -299,7 +295,9 @@ function refreshPlanCards() {
     const node = state.messageNodes.get(m.id);
     if (!node) continue;
     const body = node.querySelector('.body');
-    if (body) body.innerHTML = renderPlanCard(m);
+    if (!body) continue;
+    const cartIds = new Set((state.currentSession?.cart || []).map(song => song.id));
+    body.innerHTML = renderPlanCard(m, { cartIds });
   }
 }
 
@@ -395,7 +393,7 @@ $('#cartSettleBtn').addEventListener('click', async () => {
         updateCartUI();
       }
       closeCartDrawer();
-      refreshPlayer();
+      player.refresh();
     } else {
       pushLog('err', '结算失败：' + (r?.error || '未知'));
     }
@@ -407,7 +405,12 @@ $('#cartSettleBtn').addEventListener('click', async () => {
 });
 
 /* ================= 我的内容 抽屉 ================= */
-function openLibraryDrawer() {
+/** @param {'sound'|'eq'|'playlists'} [tab] 指定打开时停在哪一页 */
+function openLibraryDrawer(tab) {
+  if (typeof tab === 'string') {
+    state.libraryTab = tab;
+    $$('.lib-tab').forEach(t => t.classList.toggle('active', t.getAttribute('data-lib') === tab));
+  }
   $('#library-drawer').classList.add('open');
   $('#backdrop').classList.add('show');
   refreshLibrary();
@@ -418,26 +421,96 @@ function closeLibraryDrawer() {
 }
 $('#closeLibraryDrawer').addEventListener('click', closeLibraryDrawer);
 
-$$('.lib-tab').forEach(tab => {   tab.addEventListener('click', () => {     state.libraryTab = tab.getAttribute('data-lib');     $$
-('.lib-tab').forEach(t => t.classList.toggle('active', t === tab));
-    renderLibraryBody();
+$$('.lib-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    state.libraryTab = tab.getAttribute('data-lib');
+    $$('.lib-tab').forEach(t => t.classList.toggle('active', t === tab));
+    refreshLibrary();
   });
 });
 
 async function refreshLibrary() {
-  const [eqR, plR] = await Promise.all([
+  const wantsSoundState = state.libraryTab === 'sound';
+  const [eqR, plR, soundR] = await Promise.all([
     sendMsg({ action: 'listEqPresets' }),
     sendMsg({ action: 'listSavedPlaylists' }),
+    wantsSoundState
+      ? Promise.all([
+        sendMsg({ action: 'getEqState' }),
+        sendMsg({ action: 'getEffectsState' }),
+      ])
+      : Promise.resolve(null),
   ]);
   state.eqPresets = eqR?.presets || [];
   state.savedPlaylists = plR?.playlists || [];
   $('#eqCount').textContent = state.eqPresets.length;
   $('#plCount').textContent = state.savedPlaylists.length;
+
+  if (soundR) {
+    const [eqState, effectsState] = soundR;
+    state.currentEq = eqState?.ok ? eqState.eq : null;
+    state.currentEffects = effectsState?.ok ? effectsState.effects : null;
+  }
+
   renderLibraryBody();
+}
+
+/** 当前生效的音效（用状态指纹匹配，手动拧过滑块会自动失去「使用中」）。 */
+function currentSoundPreset() {
+  if (!state.currentEq) return null;
+  return findPresetByState({ eq: state.currentEq, effects: state.currentEffects });
 }
 
 function renderLibraryBody() {
   const body = $('#libraryBody');
+
+  if (state.libraryTab === 'sound') {
+    const active = currentSoundPreset();
+
+    const sections = groupSoundPresets().map((section) => {
+      const cards = section.presets.map((preset) => {
+        const isActive = active?.id === preset.id;
+        const usesEffects = Object.values(preset.effects || {}).some(
+          block => block && block.enabled === true,
+        );
+        const meta = `${preset.tagline || ''}${usesEffects ? ' · 含效果链' : ''}`;
+        return `
+          <button class="sound-card${isActive ? ' active' : ''}"
+                  data-sound-id="${escapeHtml(preset.id)}"
+                  data-accent="${escapeHtml(preset.accent || 'slate')}">
+            <span class="sound-name">${escapeHtml(preset.name)}</span>
+            <span class="sound-tag">${escapeHtml(meta)}</span>
+            ${isActive ? '<span class="sound-state">使用中</span>' : ''}
+          </button>
+        `;
+      }).join('');
+
+      return `
+        <div class="sound-group">
+          <div class="sound-group-title">${escapeHtml(section.group)}</div>
+          <div class="sound-grid">${cards}</div>
+        </div>
+      `;
+    }).join('');
+
+    const hint = !state.currentEq
+      ? ''
+      : active
+        ? `当前：${escapeHtml(active.name)}`
+        : '当前：自定义（在预设基础上手动调过）';
+
+    const chain = describeEffects(state.currentEffects);
+    const chainLabel = chain.length ? chain.join(' · ') : '关闭（只走 EQ）';
+
+    body.innerHTML = `
+      <div class="sound-intro">点一下就整套切换：EQ + 空间效果。切换后仍然可以拖动 EQ 滑杆微调。</div>
+      <div class="sound-chain">效果链：${escapeHtml(chainLabel)}</div>
+      ${sections}
+      ${hint ? `<div class="sound-hint">${hint}</div>` : ''}
+    `;
+    return;
+  }
+
   if (state.libraryTab === 'eq') {
     if (!state.eqPresets.length) {
       body.innerHTML = '<div style="text-align:center;color:var(--fg-3);font-size:12px;padding:30px 0;">还没有保存的调音<br><span style="font-size:11px;">跟 Agent 说「把这套调音存成 XX」</span></div>';
@@ -445,13 +518,15 @@ function renderLibraryBody() {
     }
     body.innerHTML = state.eqPresets.map(p => {
       const bandCount = (p.eq?.bands || []).filter(b => Math.abs(Number(b.gainDb)) > 0.01).length;
+      const chainCount = describeEffects(p.effects).length;
+      const chainHint = chainCount > 0 ? ' · 含效果链' : '';
       const srcLabel = p.source === 'llm' ? 'AI 调音' : '手动保存';
       return `
         <div class="lib-item" data-id="${p.id}">
           <div class="row">
             <div class="name">${escapeHtml(p.name)}</div>
           </div>
-          <div class="meta">${bandCount} 段调整 · 前级 ${p.eq?.preampDb || 0}dB · ${escapeHtml(srcLabel)} · ${escapeHtml(fmtDate(p.createdAt))}</div>
+          <div class="meta">${bandCount} 段调整 · 前级 ${p.eq?.preampDb || 0}dB${chainHint} · ${escapeHtml(srcLabel)} · ${escapeHtml(fmtDate(p.createdAt))}</div>
           <div class="actions">
             <button data-act="apply" data-id="${p.id}" class="primary">应用到当前</button>
             <button data-act="rename" data-id="${p.id}">改名</button>
@@ -486,7 +561,46 @@ function renderLibraryBody() {
   }
 }
 
+/** 套用一个内置音效：EQ + 效果链一起落盘。 */
+async function applySoundPresetCard(card) {
+  const id = card.getAttribute('data-sound-id');
+  const preset = BUILTIN_SOUND_PRESETS.find(item => item.id === id);
+  if (!preset) return;
+
+  card.classList.add('applying');
+  const response = await sendMsg({ action: 'applySoundPreset', id });
+  card.classList.remove('applying');
+
+  if (!response?.ok) {
+    pushLog('err', '切换音效失败：' + (response?.error || '未知'));
+    return;
+  }
+
+  state.currentEq = response.eq || state.currentEq;
+  state.currentEffects = response.effects || state.currentEffects;
+
+  if (state.currentSession && response.eq) {
+    await sendMsg({ action: 'cartSetEq', sessionId: state.currentSession.id, eq: response.eq });
+  }
+
+  pushLog('ok', `已切换到「${preset.name}」${describeChainSuffix(response.effects)}`);
+  syncEqCards();
+  renderLibraryBody();
+}
+
+/** 日志里补一句效果链，方便确认「到底有没有生效」。 */
+function describeChainSuffix(effects) {
+  const chain = describeEffects(effects || state.currentEffects);
+  return chain.length ? `（${chain.join(' · ')}）` : '（只走 EQ）';
+}
+
 $('#libraryBody').addEventListener('click', async e => {
+  const soundCard = e.target.closest('[data-sound-id]');
+  if (soundCard) {
+    await applySoundPresetCard(soundCard);
+    return;
+  }
+
   const btn = e.target.closest('[data-act]');
   if (!btn) return;
   const act = btn.getAttribute('data-act');
@@ -632,6 +746,10 @@ $('#dock-drawer').addEventListener('click', async e => {
   const dock = item.getAttribute('data-dock');
   closeDock();
 
+  if (dock === 'sound') {
+    openLibraryDrawer('sound');
+    return;
+  }
   if (dock === 'eq') {
     const r = await sendMsg({ action: 'openEqPanel' });
     if (!r?.ok) {
@@ -713,7 +831,11 @@ function appendMessageNode(m, { animate = false } = {}) {
     const isBranchStart = !lastNode || lastNode.classList.contains('msg-user');
 
     node.className = `msg-agent ${m.kind || ''}${isBranchStart ? ' branch-start' : ''}`;
-    const body = renderAgentBody(m);
+    const cartIds = new Set((state.currentSession?.cart || []).map(song => song.id));
+    // 当前会话里还留着实时思考节点时，卡片不再重复渲染一份；
+    // 重新打开侧边栏 / 切回会话时没有实时节点，就用持久化的思考记录。
+    const hasLiveThinking = state.thinkingRecords.length > 0;
+    const body = renderAgentBody(m, { cartIds, showThinking: !hasLiveThinking });
     
     // AI 节点：46px 轨道，分支线 X=32px，卡片向右深度缩进 22px
     node.innerHTML = `
@@ -734,112 +856,113 @@ function appendMessageNode(m, { animate = false } = {}) {
   if (animate) scrollToBottom();
 }
 
-function renderAgentBody(m) {
-  if (m.kind === 'text' || m.kind === 'ack') return `<div>${escapeHtml(m.text || '')}</div>`;
-  if (m.kind === 'error') return `<div class="error-card"><span>⚠️</span><div>${escapeHtml(m.text || '')}</div></div>`;
-  if (m.kind === 'save-card') {
-    const label = m.cardType === 'eq' ? '调音' : '播放列表';
-    const count = m.count ? ` · ${m.count} 首` : '';
-    return `
-      <div class="save-card">
-        <div class="icon">💾</div>
-        <div class="text">已保存${label} <b>「${escapeHtml(m.name)}」</b>${count}<br>
-        <span style="color:var(--fg-3);font-size:11px;">可在 📚 我的内容里查看</span></div>
-      </div>`;
-  }
-  if (m.kind === 'plan-card') return renderPlanCard(m);
-  if (m.kind === 'eq-card') return renderEqCard(m);
-  return `<div>${escapeHtml(m.text || '')}</div>`;
-}
-
-/* 推荐歌单：彻底移除 COMMIT // 01 标签 */
-function renderPlanCard(m) {
-  const picks = m.picks || [];
-  const stats = m.stats || {};
-  const cartIds = new Set((state.currentSession?.cart || []).map(s => s.id));
-
-  const tracksHtml = picks.map(p => {
-    const inCart = cartIds.has(p.id);
-    return `
-      <label class="track-item" style="${inCart ? 'opacity:0.55;' : ''}">
-        <input type="checkbox" class="track-cb" data-track-id="${p.id}" ${inCart ? '' : 'checked'} ${inCart ? 'disabled' : ''}>
-        ${p.cover ? `<img class="cover" src="${escapeHtml(p.cover)}" loading="lazy" alt="">` : '<div class="cover"></div>'}
-        <div class="info">
-          <div class="title">${escapeHtml(p.name)} ${inCart ? '<span style="font-size:10px;color:var(--brand-600);font-weight:500;">· 已在歌单</span>' : ''}</div>
-          <div class="artist">${escapeHtml(p.artists)}</div>
-          ${p.reason ? `<div class="reason">💡 ${escapeHtml(p.reason)}</div>` : ''}
-        </div>
-      </label>
-    `;
-  }).join('');
-
-  return `
-    <div class="plan-header">
-      <div class="plan-title">
-        <span>✨ 推荐临时歌单</span>
-      </div>
-      <span class="badge">${picks.length} 首</span>
-    </div>
-    <div class="stats-line">
-      候选 ${stats.total || 0} 首 · 精排 ${stats.filtered || 0} 首${cartIds.size > 0 ? ` · 会话歌单已有 ${cartIds.size} 首` : ''}
-    </div>
-    <div class="track-list">${tracksHtml || '<div style="color:var(--fg-3);text-align:center;padding:12px;">没有歌曲</div>'}</div>
-    <div class="card-actions">
-      <button class="btn" data-action="add-to-cart" data-msg-id="${m.id}">🎵 加入歌单</button>
-    </div>
-  `;
-}
-
-/* 声学 EQ 调校：彻底移除 COMMIT // 02 标签 */
-function renderEqCard(m) {
-  const eq = m.eq || { preampDb: 0, bands: [] };
-  const reason = m.reason || '';
-  const preamp = Number(eq.preampDb) || 0;
-
-  const preampHtml = `
-    <div class="eq-slider">
-      <span class="label strong">前级</span>
-      <input type="range" min="-12" max="3" step="1" value="${preamp}"
-             data-eq-band="preamp" data-msg-id="${m.id}">
-      <span class="value">${preamp > 0 ? '+' : ''}${preamp} dB</span>
-    </div>
-  `;
-
-  const bandsHtml = EQ_FREQS.map(f => {
-    const b = (eq.bands || []).find(x => Number(x.frequencyHz) === f);
-    const v = b ? Number(b.gainDb) : 0;
-    const label = f >= 1000 ? `${f/1000} kHz` : `${f} Hz`;
-    return `
-      <div class="eq-slider">
-        <span class="label">${label}</span>
-        <input type="range" min="-12" max="12" step="1" value="${v}"
-               data-eq-band="${f}" data-msg-id="${m.id}">
-        <span class="value">${v > 0 ? '+' : ''}${v} dB</span>
-      </div>
-    `;
-  }).join('');
-
-  return `
-    <div class="eq-header">
-      <div class="title">
-        <span>🎛 声学 EQ 调校</span>
-      </div>
-      <span class="badge yellow">${preamp > 0 ? '+' : ''}${preamp} dB 前级</span>
-    </div>
-    ${reason ? `<div class="stats-line yellow">💡 ${escapeHtml(reason)}</div>` : ''}
-    <div style="margin: 8px 0 10px;">
-      ${preampHtml}
-      <hr class="eq-divider">
-      ${bandsHtml}
-    </div>
-    <div class="card-actions">
-      <button class="btn ghost" data-action="reset-eq-card" data-msg-id="${m.id}" style="flex:0.5;">重置</button>
-      <button class="btn" data-action="save-eq-card" data-msg-id="${m.id}" style="flex:1;">💾 保存这套调音</button>
-    </div>
-  `;
-}
-
 /* ================= 卡片交互 ================= */
+/** 把一张 EQ 卡片的滑杆同步成给定 EQ。 */
+function syncEqCardInputs(msgId, eq) {
+  const node = state.messageNodes.get(msgId);
+  if (!node) return;
+
+  const preamp = Number(eq?.preampDb) || 0;
+  const preampInput = node.querySelector('[data-eq-band="preamp"]');
+  if (preampInput) {
+    preampInput.value = preamp;
+    const val = preampInput.parentElement.querySelector('.value');
+    if (val) val.textContent = `${preamp > 0 ? '+' : ''}${preamp} dB`;
+  }
+
+  for (const frequency of EQ_FREQUENCIES) {
+    const band = (eq?.bands || []).find(item => Number(item.frequencyHz) === frequency);
+    const gain = Number(band?.gainDb) || 0;
+    const input = node.querySelector(`[data-eq-band="${frequency}"]`);
+    if (!input) continue;
+    input.value = gain;
+    const val = input.parentElement.querySelector('.value');
+    if (val) val.textContent = `${gain > 0 ? '+' : ''}${gain} dB`;
+  }
+
+  const badge = node.querySelector('.eq-header .badge:last-child');
+  if (badge) badge.textContent = `${preamp > 0 ? '+' : ''}${preamp} dB 前级`;
+}
+
+/* ================= 调音卡片 ↔ 音效 ================= */
+/**
+ * 把「当前 EQ + 效果链」回写到当前会话里的每一张调音卡片。
+ *
+ * 不管用户是在卡片里选的音效、在音效库里选的、还是点了重置，
+ * 都走这一个出口，避免出现「声音变了但滑杆没动」。
+ */
+function syncEqCards() {
+  const messages = state.currentSession?.messages || [];
+  for (const message of messages) {
+    if (message.kind !== 'eq-card') continue;
+    message.eq = state.currentEq;
+    message.effects = state.currentEffects;
+    syncEqCardInputs(message.id, message.eq);
+    updateEqPresetChips(message.id, message);
+  }
+}
+
+/** 刷新卡片里预设 chips 的选中态与标题上的当前预设名。 */
+function updateEqPresetChips(msgId, message) {
+  const node = state.messageNodes.get(msgId);
+  if (!node) return;
+
+  const active = findPresetByState({
+    eq: message?.eq,
+    effects: message?.effects || state.currentEffects,
+  });
+
+  for (const chip of node.querySelectorAll('[data-sound-id]')) {
+    const preset = BUILTIN_SOUND_PRESETS.find(item => item.id === chip.getAttribute('data-sound-id'));
+    chip.classList.toggle('active', Boolean(preset) && preset.id === active?.id);
+  }
+
+  const label = node.querySelector('.eq-link-label');
+  if (label) label.textContent = `预设效果 · ${active ? active.name : '自定义'}`;
+}
+
+/** 点预设 chip：整套写进播放器，滑杆与标题同步刷新，然后收起面板。 */
+async function applySoundChip(msg, msgId, btn) {
+  const preset = BUILTIN_SOUND_PRESETS.find(item => item.id === btn.getAttribute('data-sound-id'));
+  if (!preset) return;
+
+  btn.disabled = true;
+  const response = await sendMsg({ action: 'applySoundPreset', id: preset.id });
+  btn.disabled = false;
+
+  if (!response?.ok) {
+    pushLog('err', '切换音效失败：' + (response?.error || '未知'));
+    return;
+  }
+
+  state.currentEq = response.eq || preset.eq;
+  state.currentEffects = response.effects || preset.effects;
+
+  if (state.currentSession) {
+    sendMsg({ action: 'cartSetEq', sessionId: state.currentSession.id, eq: state.currentEq }).catch(() => {});
+  }
+
+  syncEqCards();
+
+  const node = state.messageNodes.get(msgId);
+  const panel = node?.querySelector('.eq-presets');
+  const toggle = node?.querySelector('[data-action="toggle-eq-presets"]');
+  if (panel) panel.hidden = true;
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', 'false');
+    const caret = toggle.querySelector('.caret');
+    if (caret) caret.textContent = '▾';
+  }
+
+  pushLog('ok', `已切换到「${preset.name}」${describeChainSuffix(state.currentEffects)}`);
+}
+
+$('#chatStream').addEventListener('change', (e) => {
+  const cb = e.target.closest('.track-cb');
+  if (!cb) return;
+  syncSelectAllLabel(cb.closest('.msg-agent'));
+});
+
 $('#chatStream').addEventListener('click', async e => {
   const toggle = e.target.closest('.thinking-toggle');
   if (toggle) {
@@ -851,9 +974,39 @@ $('#chatStream').addEventListener('click', async e => {
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
   const action = btn.getAttribute('data-action');
+
   const msgId = btn.getAttribute('data-msg-id');
+
+  // 全选 / 取消全选：只动勾选状态，不改数据，用户确认后再点「加入歌单」。
+  if (action === 'toggle-select-all') {
+    const node = state.messageNodes.get(msgId);
+    if (!node) return;
+    const boxes = [...node.querySelectorAll('.track-cb:not(:disabled)')];
+    if (boxes.length === 0) return;
+    const nextChecked = !boxes.every(cb => cb.checked);
+    boxes.forEach((cb) => { cb.checked = nextChecked; });
+    syncSelectAllLabel(node);
+    return;
+  }
+
+  if (action === 'toggle-eq-presets') {
+    const node = state.messageNodes.get(msgId);
+    const panel = node?.querySelector('.eq-presets');
+    if (!panel) return;
+    panel.hidden = !panel.hidden;
+    btn.setAttribute('aria-expanded', String(!panel.hidden));
+    const caret = btn.querySelector('.caret');
+    if (caret) caret.textContent = panel.hidden ? '▾' : '▴';
+    return;
+  }
+
   const msg = (state.currentSession?.messages || []).find(x => x.id === msgId);
   if (!msg) return;
+
+  if (action === 'apply-sound-chip') {
+    await applySoundChip(msg, msgId, btn);
+    return;
+  }
 
   if (action === 'add-to-cart') {
     const picks = msg.picks || [];
@@ -887,26 +1040,23 @@ $('#chatStream').addEventListener('click', async e => {
   }
 
   if (action === 'reset-eq-card') {
-    const node = state.messageNodes.get(msgId);
-    if (!node) return;
-    const preampInput = node.querySelector(`[data-eq-band="preamp"]`);
-    if (preampInput) preampInput.value = 0;
-    const preampVal = preampInput?.parentElement.querySelector('.value');
-    if (preampVal) preampVal.textContent = '0 dB';
-    for (const f of EQ_FREQS) {
-      const input = node.querySelector(`[data-eq-band="${f}"]`);
-      if (input) input.value = 0;
-      const valEl = input?.parentElement.querySelector('.value');
-      if (valEl) valEl.textContent = '0 dB';
-    }
-    const eq = { enabled: true, preampDb: 0, bands: EQ_FREQS.map(f => ({ frequencyHz: f, gainDb: 0 })) };
-    msg.eq = eq;
-    sendMsg({ action: 'setEqDirect', eq }).catch(() => {});
+    // 重置 = 回到「原声」：EQ 清零，效果链也要一并退出，
+    // 否则空间处理会留在链上，听感和 UI 都会对不上。
+    btn.disabled = true;
+    const response = await sendMsg({ action: 'applySoundPreset', id: DEFAULT_SOUND_PRESET_ID });
+    btn.disabled = false;
+
+    const eq = response?.ok ? (response.eq || defaultEq()) : defaultEq();
+    const effects = response?.ok ? (response.effects || defaultEffects()) : defaultEffects();
+    if (!response?.ok) pushLog('err', '重置失败：' + (response?.error || '未知'));
+
+    state.currentEq = eq;
+    state.currentEffects = effects;
+    syncEqCards();
+
     if (state.currentSession) {
       await sendMsg({ action: 'cartSetEq', sessionId: state.currentSession.id, eq });
     }
-    const eqHeaderBadge = node.querySelector('.eq-header .badge:last-child');
-    if (eqHeaderBadge) eqHeaderBadge.textContent = '0 dB 前级';
     return;
   }
 
@@ -917,7 +1067,13 @@ $('#chatStream').addEventListener('click', async e => {
     if (name === null) return;
     const finalName = name.trim() || `调音-${new Date().toLocaleDateString('zh-CN')}`;
     try {
-      const r = await sendMsg({ action: 'saveEqPreset', name: finalName, eq });
+      // 连效果链一起存：只存 EQ 的话，套用时空间处理会丢
+      const r = await sendMsg({
+        action: 'saveEqPreset',
+        name: finalName,
+        eq,
+        effects: msg.effects || state.currentEffects,
+      });
       if (!r?.ok) throw new Error(r?.error || '保存失败');
       pushLog('ok', `已保存调音「${finalName}」`);
     } catch (err) {
@@ -951,12 +1107,14 @@ $('#chatStream').addEventListener('input', async e => {
 
   const preampInput = node.querySelector(`[data-eq-band="preamp"]`);
   const preampDb = preampInput ? Number(preampInput.value) : 0;
-  const bands = EQ_FREQS.map(f => {
+  const bands = EQ_FREQUENCIES.map(f => {
     const i = node.querySelector(`[data-eq-band="${f}"]`);
     return { frequencyHz: f, gainDb: i ? Number(i.value) : 0 };
   });
   const eq = { enabled: true, preampDb, bands };
   msg.eq = eq;
+  // 让「我的内容 → 音效」能立刻反映出手动调整
+  state.currentEq = eq;
 
   if (band === 'preamp') {
     const eqHeaderBadge = node.querySelector('.eq-header .badge:last-child');
@@ -980,11 +1138,22 @@ inputEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
 });
 sendBtn.addEventListener('click', sendChat);
-stopBtn.addEventListener('click', () => {
-  setRunningUI(false);
-  finishThinking();
+
+/** 中断当前这一轮：本地立刻收尾，同时通知后台取消平台请求与模型流。 */
+function abortRunning() {
+  if (!state.running) return;
+  state.stopped = true;
+  finishThinking({ label: '已中断' });
   sendMsg({ action: 'chatAbort' }).catch(() => {});
-  pushLog('err', '已中断');
+  pushLog('err', '已中断本轮检索');
+}
+
+stopBtn.addEventListener('click', abortRunning);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && state.running) {
+    e.preventDefault();
+    abortRunning();
+  }
 });
 
 function setRunningUI(running) {
@@ -999,6 +1168,7 @@ async function sendChat() {
   if (!text) return;
   inputEl.value = '';
   inputEl.style.height = 'auto';
+  state.stopped = false;
 
   if (!state.currentSession) {
     const r = await sendMsg({ action: 'createSession', name: text.slice(0, 20) });
@@ -1027,9 +1197,12 @@ async function sendChat() {
 }
 
 /* ================= 思考节点 (首项 AI 动作：必定带分支曲线) ================= */
-function stageLabel(stage) {
+function stageLabel(stage, detail) {
+  if (detail) return detail;
   return stage === 'rerank' ? '精选歌曲中'
-    : stage === 'route' ? '理解意图中'
+    : stage === 'execute' ? '检索歌曲中'
+    : stage === 'plan' ? '规划检索中'
+    : stage === 'route' ? '理解并规划中'
     : stage === 'eq' ? '设计调音中'
     : '思考中';
 }
@@ -1083,7 +1256,7 @@ function createThinkingNode({ stage = 'route' } = {}) {
   scrollToBottom();
   return record;
 }
-function finishThinkingNode(record) {
+function finishThinkingNode(record, { label } = {}) {
   if (!record || record.finished) return;
   record.finished = true;
   if (record.timer) clearInterval(record.timer);
@@ -1095,9 +1268,9 @@ function finishThinkingNode(record) {
     toggle.classList.add('done');
     const spinner = toggle.querySelector('.spinner');
     if (spinner) spinner.remove();
-    const label = toggle.querySelector('.stage-label');
+    const labelEl = toggle.querySelector('.stage-label');
     const elapsed = ((Date.now() - record.startTime) / 1000).toFixed(1);
-    if (label) label.textContent = `已思考 ${elapsed}s`;
+    if (labelEl) labelEl.textContent = label || `已思考 ${elapsed}s`;
     const elapsedEl = toggle.querySelector('.elapsed');
     if (elapsedEl) elapsedEl.textContent = '';
   }
@@ -1115,16 +1288,22 @@ function appendThinkingChunk(delta) {
   }
   scrollToBottom();
 }
-function setThinkingStage(stage) {
+function setThinkingStage(stage, detail) {
   const current = state.thinkingRecords[state.thinkingRecords.length - 1];
-  if (!current || current.finished) return createThinkingNode({ stage });
+  if (!current || current.finished) {
+    const record = createThinkingNode({ stage });
+    const label = record.node.querySelector('.stage-label');
+    if (label) label.textContent = stageLabel(stage, detail);
+    setRunningUI(true);
+    return;
+  }
   current.stage = stage;
   const label = current.node.querySelector('.stage-label');
-  if (label) label.textContent = stageLabel(stage);
+  if (label) label.textContent = stageLabel(stage, detail);
 }
-function finishThinking() {
+function finishThinking(options) {
   for (const rec of state.thinkingRecords) {
-    if (!rec.finished) finishThinkingNode(rec);
+    if (!rec.finished) finishThinkingNode(rec, options);
   }
   setRunningUI(false);
 }
@@ -1133,26 +1312,36 @@ function finishThinking() {
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg?.target) return;
   if (msg.target === 'sidepanel' && msg.type === 'PLAYER_STATE_CHANGED') {
-    applyPlayerState(msg.payload);
+    player.applyState(msg.payload);
     return;
   }
   if (msg.target === 'sidepanel' && msg.type === 'CHAT_STREAM_CHUNK') {
     const sid = msg.payload?.sessionId;
     if (sid && sid !== state.currentSession?.id) return;
+    if (state.stopped) return;
     appendThinkingChunk(msg.payload?.delta || '');
+    return;
+  }
+  if (msg.target === 'sidepanel' && msg.type === 'CHAT_PROGRESS') {
+    const sid = msg.payload?.sessionId;
+    if (sid && sid !== state.currentSession?.id) return;
+    if (state.stopped) return;
+    setThinkingStage(msg.payload?.stage || 'route', msg.payload?.detail);
     return;
   }
   if (msg.target === 'sidepanel' && msg.type === 'CHAT_THINKING_START') {
     const sid = msg.payload?.sessionId;
     if (sid && sid !== state.currentSession?.id) return;
+    if (state.stopped) return;
+    // 阶段事件代表「这一轮还在跑」：保持思考节点展开、停止按钮可见。
     setThinkingStage(msg.payload?.stage || 'route');
+    setRunningUI(true);
     return;
   }
   if (msg.target === 'sidepanel' && msg.type === 'CHAT_THINKING_END') {
     const sid = msg.payload?.sessionId;
     if (sid && sid !== state.currentSession?.id) return;
     finishThinking();
-    setRunningUI(false);
     return;
   }
 });
@@ -1203,59 +1392,8 @@ async function loadCurrentSession() {
   updateCartUI();
 }
 
-/* ================= 播放器状态 ================= */
-const playerEls = {
-  cover: $('#playerCover'), title: $('#playerTitle'), artist: $('#playerArtist'),
-  current: $('#playerCurrent'), duration: $('#playerDuration'),
-  seek: $('#playerSeek'), play: $('#playerPlay'),
-  prev: $('#playerPrev'), next: $('#playerNext'), volume: $('#playerVolume'),
-};
-let playerSeeking = false;
-function applyPlayerState(state) {
-  if (!state) return;
-  const s = state;
-  if (s.currentSong) {
-    if (s.currentSong.cover) {
-      playerEls.cover.src = s.currentSong.cover;
-      playerEls.cover.style.visibility = 'visible';
-    } else playerEls.cover.style.visibility = 'hidden';
-    playerEls.title.textContent = s.currentSong.name || '未知';
-    playerEls.artist.textContent = s.currentSong.artists || '';
-  } else {
-    playerEls.cover.style.visibility = 'hidden';
-    playerEls.title.textContent = '未播放';
-    playerEls.artist.textContent = '播放队列为空';
-  }
-  if (s.loading) { playerEls.play.textContent = '⏳'; playerEls.play.disabled = true; }
-  else { playerEls.play.textContent = s.playing ? '⏸' : '▶'; playerEls.play.disabled = false; }
-  if (!playerSeeking) {
-    playerEls.seek.max = s.duration || 1;
-    playerEls.seek.value = s.currentTime || 0;
-    playerEls.current.textContent = fmtTime(s.currentTime);
-  }
-  playerEls.duration.textContent = fmtTime(s.duration);
-  if (typeof s.volume === 'number') playerEls.volume.value = s.volume;
-}
-playerEls.play.addEventListener('click', () => sendMsg({ target: 'background', type: 'PLAYER_TOGGLE' }));
-playerEls.next.addEventListener('click', () => sendMsg({ target: 'background', type: 'PLAYER_NEXT' }));
-playerEls.prev.addEventListener('click', () => sendMsg({ target: 'background', type: 'PLAYER_PREV' }));
-playerEls.seek.addEventListener('pointerdown', () => { playerSeeking = true; });
-playerEls.seek.addEventListener('input', () => {
-  playerEls.current.textContent = fmtTime(parseFloat(playerEls.seek.value));
-});
-playerEls.seek.addEventListener('change', () => {
-  const t = parseFloat(playerEls.seek.value);
-  sendMsg({ target: 'background', type: 'PLAYER_SEEK', payload: { time: t } });
-  setTimeout(() => { playerSeeking = false; }, 300);
-});
-playerEls.volume.addEventListener('input', () => {
-  const v = parseFloat(playerEls.volume.value);
-  sendMsg({ target: 'background', type: 'PLAYER_SET_VOLUME', payload: { volume: v } });
-});
-async function refreshPlayer() {
-  const r = await sendMsg({ target: 'background', type: 'PLAYER_GET_STATE' });
-  if (r?.ok && r.state) applyPlayerState(r.state);
-}
+/* ================= 播放器 ================= */
+const player = createPlayerControls({ send: sendMsg });
 
 /* ================= 主题 ================= */
 function applyTheme() {
@@ -1281,13 +1419,13 @@ applyTheme();
   await refreshModelBadge();
   await refreshSessions();
   await loadCurrentSession();
-  await refreshPlayer();
+  await player.refresh();
 })();
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     refreshModelBadge();
-    refreshPlayer();
+    player.refresh();
     refreshSessions();
   }
 });
