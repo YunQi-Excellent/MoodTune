@@ -19,4 +19,13 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
-      - run: npm run check
+      - run: npm run lint
+      # tests/ 只保留在本地开发环境，不纳入版本库：
+      # 仓库里没有它时跳过测试，有的话顺带跑一遍。
+      - name: Unit tests
+        run: |
+          if [ -d tests ]; then
+            npm test
+          else
+            echo "tests/ 未纳入版本库，跳过单元测试"
+          fi

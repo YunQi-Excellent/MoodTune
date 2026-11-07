@@ -300,7 +300,7 @@ moodtune/
 │       ├── services/          # 会话、歌单、播放器、偏好、检索服务
 │       ├── background/        # 消息路由、处理器、扩展事件
 │       └── sidepanel/         # 格式化、卡片渲染、播放栏
-├── tests/                     # Vitest
+├── tests/                     # Vitest（本地保留，不入库）
 └── docs/                      # 文档与 GitHub Pages
 ```
 

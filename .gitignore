@@ -24,3 +24,6 @@ dist/
 # 日志
 *.log
 npm-debug.log*
+
+# 测试脚本只保留在本地，不纳入版本库也不推送
+/tests/
