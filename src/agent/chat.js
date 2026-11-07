@@ -17,12 +17,14 @@ import { EXTRACT_SYSTEM, DECIDE_SYSTEM, RERANK_SYSTEM } from './prompts.js';
 
 const HELP_TEXT = '可以跟我说：想听什么场景的歌（"深夜写代码"）、想调整听感（"低频轻一点"）、或者"把当前列表保存成 XX"。';
 
-// 抽取只输出一行 JSON，给足 6 秒仍未返回就放弃快速通道，回退到原流程。
-const EXTRACT_TIMEOUT_MS = 6000;
+// 抽取只输出一行 JSON。推理型模型会先吐一大段 reasoning 再给结果，
+// 6 秒常常连第一个 token 都等不到；放宽到 10 秒，反正它和决策是并行的。
+const EXTRACT_TIMEOUT_MS = 10000;
 const LITERAL_TIMEOUT_MS = 6000;
-// 「意图 + 检索规划」合并成一次调用后，单次封顶 15 秒：
-// 模型再慢也不能把整轮预算吃掉，超时就按「找歌 + 原话直搜」兜底。
-const DECIDE_TIMEOUT_MS = 15000;
+// 「意图 + 检索规划」合并成一次调用后，单次封顶 25 秒：
+// 这一档是给推理型模型留的——15 秒时它还在思考，被掐掉就只能走关键词兜底。
+// 仍然不能超过整轮 30 秒预算，超时后退回关键词检索。
+const DECIDE_TIMEOUT_MS = 25000;
 // 检索动作并发数：太高会触发平台风控，太低等于串行。
 const EXECUTE_CONCURRENCY = 3;
 // 留给精排的时间：剩余预算低于这个值就跳过精排，直接用已召回候选出结果。
@@ -138,8 +140,9 @@ export function createChatAgent({
    * 只有 mode=search 时才需要 queries；解析失败/超时由调用方退回兜底决策。
    */
   async function decide(userNeed, signal, providerContext, onChunk, deadline, followUp = '') {
-    // 决策最多吃掉本轮剩余预算，并且自己再封顶 15 秒：
-    // 模型慢的时候宁可退回「原话直搜」，也不能让整轮对话卡在这一步。
+    // 决策最多吃掉本轮剩余预算，并且自己再封顶 25 秒。
+    // 推理型模型在 15 秒时往往还在思考，掐掉就只能退回关键词兜底；
+    // 这里给它足够的时间，剩下的 5 秒仍然留给检索。
     const remaining = deadline ? deadline - now() : DECIDE_TIMEOUT_MS;
     const timeout = createTimeoutSignal(signal, Math.max(1, Math.min(DECIDE_TIMEOUT_MS, remaining)));
     let emitted = '';
@@ -393,21 +396,26 @@ export function createChatAgent({
 
   /**
    * 并发执行检索动作（最多 EXECUTE_CONCURRENCY 路）。
-   * 任何一路失败都只丢这一路的结果，不影响其它路；用户中断则整体上抛。
+   * 任何一路失败都只丢这一路的结果，不影响其它路。
+   *
+   * 预算到点 / 用户中断时不再开新的检索动作，但**已经拿到的结果要交回去**：
+   * 决策可能吃掉大半预算，这时候给半份结果也比一张「检索超时」有用。
+   * @returns {Promise<{results: object[], aborted: boolean}>}
    */
   async function runQueries(queries, provider, signal) {
     const collected = [];
     let cursor = 0;
+    let aborted = false;
 
     const worker = async () => {
       for (;;) {
         const index = cursor++;
         if (index >= queries.length) return;
-        throwIfAborted(signal);
+        if (signal?.aborted) { aborted = true; return; }
         try {
           collected.push(...await executeQuery(queries[index], provider, { sleep, signal }));
         } catch (e) {
-          if (isAbortError(e)) throw e;
+          if (isAbortError(e)) { aborted = true; return; }
           log.warn('[chat] 检索失败：', e?.message);
         }
       }
@@ -416,7 +424,7 @@ export function createChatAgent({
     await Promise.all(
       Array.from({ length: Math.min(EXECUTE_CONCURRENCY, queries.length) }, worker),
     );
-    return collected;
+    return { results: collected, aborted };
   }
 
   /**
@@ -508,7 +516,12 @@ export function createChatAgent({
       notify('CHAT_THINKING_START', { sessionId, stage: 'execute' });
       currentStage = 'execute';
       stageStartedAt = now();
-      const raw = await runQueries(plan.queries, provider, scopedSignal);
+      // 预算到点时 runQueries 会带着已拿到的结果回来（aborted=true），
+      // 这类半份结果仍然可用：先出结果，别让用户空手而归。
+      const { results: raw, aborted } = await runQueries(plan.queries, provider, scopedSignal);
+      if (aborted) timedOut = true;
+      // 用户按了中断：不再往下走，直接交给外层收尾。
+      throwIfAborted(signal);
 
       let deduped = dedupByWeight(raw);
       endStage('execute');

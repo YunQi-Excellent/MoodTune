@@ -427,6 +427,48 @@ describe('createChatAgent 检索', () => {
     expect(error.thinking.text).toContain('阶段耗时');
   });
 
+  it('预算在检索中途耗尽时，已拿到的候选仍然出卡而不是报超时', async () => {
+    const providers = {
+      primary: {
+        label: '测试平台',
+        capabilities: { search: ['searchTracks'] },
+        searchTracks: vi.fn(({ keyword, signal } = {}) => {
+          if (keyword === '快查询') {
+            return Promise.resolve({
+              tracks: [{ id: 201, name: '雨天', artists: 'A', album: 'X', durationMs: 200_000 }],
+              total: 1,
+            });
+          }
+          return new Promise((_, reject) => {
+            const fail = () => reject(Object.assign(new Error('已中止'), { name: 'AbortError' }));
+            if (signal?.aborted) { fail(); return; }
+            signal?.addEventListener('abort', fail);
+          });
+        }),
+      },
+    };
+    const { agent, store } = setup({
+      providers,
+      searchBudgetMs: 40,
+      responses: [decide({
+        queries: [
+          { tool: 'searchTracks', keyword: '快查询', limit: 10 },
+          { tool: 'searchTracks', keyword: '慢查询', limit: 10 },
+        ],
+        targetCount: 2,
+      })],
+    });
+
+    await agent.start({ userNeed: '来点雨天的歌' });
+
+    const session = await store.getCurrent();
+    const card = session.messages.find(message => message.kind === 'plan-card');
+    expect(card.picks.map(pick => pick.id)).toEqual([201]);
+    // 半份结果要标明是超时降级来的，用户才知道为什么没精排。
+    expect(card.stats.timedOut).toBe(true);
+    expect(card.stats.rerankSkipped).toBe(true);
+  });
+
   it('决策阶段就吃光预算时，提示指向模型而不是检索', async () => {
     let clock = NOW;
     const now = () => clock;
