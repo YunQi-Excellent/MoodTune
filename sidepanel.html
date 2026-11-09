@@ -52,6 +52,12 @@
         <div class="player-title" id="playerTitle">未播放</div>
         <div class="player-artist" id="playerArtist">播放队列为空</div>
       </div>
+      <button class="player-mode-btn" id="playerMode" type="button"
+              data-mode="sequential" title="播放模式：顺序播放（点击切换）"
+              aria-label="播放模式：顺序播放">
+        <span id="playerModeIcon" aria-hidden="true">➡</span>
+        <span id="playerModeLabel">顺序</span>
+      </button>
     </div>
     <div class="player-progress-row">
       <span class="player-time" id="playerCurrent">0:00</span>

@@ -73,6 +73,8 @@ export const SESSION_CONFIG = Object.freeze({
 
 export const PLAYER_DEFAULTS = Object.freeze({
   volume: 0.8,
+  // 与 src/core/playback.js 的 PLAYBACK_MODES.SEQUENTIAL 保持一致。
+  playbackMode: 'sequential',
 });
 
 export const DEFAULT_PROVIDER_ID = 'netease';

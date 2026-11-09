@@ -1,4 +1,5 @@
 import { PLAYER_DEFAULTS } from '../../core/constants.js';
+import { normalizePlaybackMode } from '../../core/playback.js';
 
 /**
  * 播放器服务：把「跟播放器对话」收敛成一个对象。
@@ -26,6 +27,8 @@ export function createPlayerService({ send, providers, prefs, defaults = PLAYER_
     /* ---- 播放控制 ---- */
     getState: () => call('PLAYER_GET_STATE'),
     setPlaylist: (songs, autoPlay = true) => call('PLAYER_SET_PLAYLIST', { songs, autoPlay }),
+    setPlaybackMode: mode => call('PLAYER_SET_MODE', { mode }),
+    cyclePlaybackMode: () => call('PLAYER_CYCLE_MODE'),
 
     /* ---- EQ ---- */
     getEq: () => call('EQ_GET'),
@@ -67,6 +70,10 @@ export function createPlayerService({ send, providers, prefs, defaults = PLAYER_
       prefs?.saveVolume(volume);
     },
 
+    savePlaybackMode(mode) {
+      prefs?.savePlaybackMode?.(mode);
+    },
+
     async loadPrefs() {
       const saved = prefs ? await prefs.load() : null;
       return {
@@ -74,6 +81,7 @@ export function createPlayerService({ send, providers, prefs, defaults = PLAYER_
         volume: typeof saved?.volume === 'number' ? saved.volume : defaults.volume,
         eq: saved?.eq || null,
         effects: saved?.effects || null,
+        playbackMode: normalizePlaybackMode(saved?.playbackMode ?? defaults.playbackMode),
       };
     },
   };

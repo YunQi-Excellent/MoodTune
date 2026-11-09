@@ -66,7 +66,7 @@ sidepanel            background                      agent                      
 - **原文直搜是最短路径**：抽取提示词只做「把用户原话里要点名检索的片段原样截出来」，不负责改写。命中判定见 [literal.js](../src/agent/literal.js)：检索核心词落在歌名/专辑/歌手里即视为命中（`酒神op` → 《霓虹下的酒神》）。命中后不再决策、不挖歌单、不精排，直接出结果。
   - 第一枪打原话；没命中再用剥掉 `op/ed/ost/主题曲` 与连接词的核心词搜一次（`P4D的op` → `p4d`）。平台会把「的」「op」当独立词，直接用原话搜只会返回一堆钢琴练习曲。
   - 直搜命中时立刻中止那次决策调用，不再等它，也不让它的文字继续往思考节点里灌。
-- **「再找一些」是追加，不是重来**：决策模型输出 `carryOver`，agent 取会话里**最后一张结果卡**的候选（已经进歌单的不算），把它们的 id 一并加进新检索的排除集，最后把「上轮保留 + 本轮新增」合成一张卡（总量封顶 20）。一条都没新增时只回一条文字提示，不重复渲染整张卡片。直搜结果如果和上一轮完全重合，也不会短路，而是等决策走追加。
+- **「再找一些」是追加，换了主题就是重来**：结果卡会记下这一轮的主体（`plan.need` / `plan.topic`）。下一轮先问一句「还是同一件事吗」——`resolveCarry()` 用用户这句话里的主体去比上一轮主题，`换一批/不对` 直接判新需求，主题对不上就丢弃上一轮结果。模型给的 `carryOver` 只是候选答案：它一看到【上一轮】上下文就容易判成 true，`我想听p4d的op` 曾经因此把上一轮 SEED 的候选一起拼回卡里。判定为追加时，才取最后一张卡的候选（已进歌单的不算）并加进新检索的排除集，最后把「上轮保留 + 本轮新增」合成一张卡（总量封顶 20）。一条都没新增时只回一条文字提示，不重复渲染整张卡片。直搜结果如果和上一轮完全重合，也不会短路，而是等决策走追加。
 - **检索动作并发执行**（默认 3 路）：`runQueries()` 用工作池跑 `plan.queries`，任何一路失败只丢这一路。串行执行时 5 条 query × 挖歌单会把预算吃干。
 - **挖歌单有硬上限**：单条 `searchPlaylists` / `myPlaylists` 最多挖 4 个歌单、每个 150 首（[INTENT_CONFIG](../src/core/constants.js)），规划出的 `limit: 20 / 500` 会被强制收窄。
 - **一次检索有硬预算**（默认 60s，从用户按下发送开始算）：决策、抽取、执行、精排共享同一个截止时间；决策单独封顶 25s 且不超过剩余预算（推理型模型 15s 时常常还在思考，掐掉就只能走关键词兜底），**剩下的约 35s 全部留给执行 + 精排**。超时就中止并说明**卡在哪个阶段**（「模型决策阶段就用完预算」≠「检索超时」）。
@@ -93,6 +93,15 @@ sidepanel ──applySoundPreset──────▶ background ──▶ EQ_SE
 
 `PLAYER_*` 在路由里是**前缀兜底**：除了 `PLAYER_RESOLVE_URL`、`PLAYER_STATE_CHANGED` 需要特判，其余指令直接转发给 offscreen，新增播放指令不必改路由。
 
+播放模式（顺序 / 单曲循环 / 随机）的「下一首是谁」由 [src/core/playback.js](../src/core/playback.js) 的 `createPlaybackNavigator` 决定，offscreen 只负责把 `PLAY | REPEAT | RESTART | STOP` 映射成音频动作：
+
+- **顺序播放**：从头走到尾，队尾停止；手动上一首/下一首也不会绕回。
+- **单曲循环**：只接管自然播完（重播当前歌）；手动下一首仍能离开当前歌。
+- **随机播放**：一轮内是完整排列、不重复；一轮结束后重新洗牌，并避免新的一轮立刻重复刚播完的歌。
+- 切到随机模式时保留当前歌，只洗剩下的；从歌单直接点播也会同步随机游标。
+- 模式通过 `PERSIST_PLAYBACK_MODE` 回写 `playerPlaybackMode`，offscreen 启动时随音量/EQ 一起恢复。
+- 每次换歌都会生成自增 `loadToken`：解析地址可能乱序返回，过期请求直接丢弃，避免「第二次点击被第一次的迟到结果覆盖」。单击上一首直接切歌，不做「播放超过 3 秒先回本曲开头」的二次确认。
+
 音频链在 [src/app/audio/graph.js](../src/app/audio/graph.js)：
 
 ```text
@@ -117,7 +126,7 @@ source → preamp → EQ(10 段 peaking) → 宽度 → 串音 → 早期反射 
 | `currentSessionId` | 当前会话 id |
 | `savedPlaylists` | 保存的播放列表 |
 | `eqPresets` | EQ 预设 |
-| `currentEq` / `currentEffects` / `playerVolume` | 播放器偏好 |
+| `currentEq` / `currentEffects` / `playerVolume` / `playerPlaybackMode` | 播放器偏好 |
 | `llmConfig` | 大模型配置（options 页写入） |
 
 所有「读 → 改 → 写」都必须经过 [src/app/storage](../src/app/storage) 里的仓储，它们共享 [storage-queue.js](../src/app/storage/storage-queue.js) 的按键队列：同一个键串行、不同键并行。直接 `chrome.storage.local.set` 只允许出现在单键、无读改写的场景（偏好回写、文件夹恢复）。

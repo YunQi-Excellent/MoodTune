@@ -37,6 +37,7 @@ export const DECIDE_SYSTEM = `你是 MoodTune 的意图路由器兼检索规划�
   ],
   "filters": { "durationMs": { "min": 60000, "max": 900000 }, "excludeKeywords": ["remix"] },
   "targetCount": 10,
+  "topic": "这次找的主体（歌手/作品/曲风），10 字以内；纯追加请求留空",
   "carryOver": false,
   "reasoning": "一句话说明找歌思路"
 }
@@ -61,11 +62,16 @@ export const DECIDE_SYSTEM = `你是 MoodTune 的意图路由器兼检索规划�
 - getArtistTracks 只在用户明确提到歌手时用
 - 描述曲风/氛围时，用多个具体关键词（流派、乐器、语言、年代、相似作品名），不要照抄用户口语
 - filters 与 targetCount 可选，targetCount 限定 5-20
-- carryOver 表示「在上一轮结果基础上追加」：只有用户说"再来点/还有吗/不止这几首/不够/继续找"时为 true；
-  用户说"不对/换一批/不是这个"表示上一轮不理想，carryOver 必须是 false
-- 如果输入里带了【上一轮】信息，说明用户在延续上一轮需求：carryOver=true 时沿用上一轮的方向（歌手/作品/氛围），
-  但 queries 必须换关键词或扩大范围，不要照搬「上一轮用过的检索词」，targetCount 可以更大
-- 没有【上一轮】信息时 carryOver 必须是 false
+- topic 写清这次找的主体：歌手 / 作品 / 曲风，10 字以内（如 "高达SEED"、"p4d"、"周杰伦"、"city pop"）；
+  纯粹的追加请求（"再来点"）填空字符串
+- carryOver 表示「在上一轮结果基础上继续」。判断依据是**用户这句话本身**，不是有没有【上一轮】信息：
+  - 用户只是要求更多（"再来点""还有吗""不够""不止这几首""继续""再多找几首"）→ true
+  - 用户换了作品/歌手/曲风（哪怕还带个 op）→ false，这是新需求：queries 只围绕新需求，上一轮的结果不算数
+  - 用户说"不对/换一批/不是这个"→ false
+  - 没有【上一轮】信息时必须是 false
+- 【上一轮】只是参考信息：带上它不代表在延续。topic 与上一轮主题不一样时，carryOver 必须是 false。
+- carryOver=true 时才沿用上一轮的方向（歌手/作品/氛围），但 queries 必须换关键词或扩大范围，
+  不要照搬「上一轮用过的检索词」，targetCount 可以更大
 - reasoning 只写一句话，不要长篇分析
 - payload 只在对应 mode 下需要时才填；reply 用于"已收到"气泡，要简短`;
 

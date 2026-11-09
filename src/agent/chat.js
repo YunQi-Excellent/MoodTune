@@ -296,9 +296,113 @@ export function createChatAgent({
 
     return [
       previousNeed ? `上一轮用户需求：${previousNeed}` : '',
+      card.plan?.topic ? `上一轮主题：${card.plan.topic}` : '',
       queries.length ? `上一轮用过的检索词：${queries.join(' / ')}` : '',
       names.length ? `上一轮结果：${names.join('、')} 等 ${(card.picks || []).length} 首` : '',
     ].filter(Boolean).join('\n');
+  }
+
+  // 「再来点 / 不止这几首」这类纯粹的追加措辞。
+  // 注意这里只用来识别「用户没提新东西」，具体找什么仍然由模型决定。
+  const CONTINUATION_WORDS = /再检索|再搜索|再找|再搜|再来|再给我|继续|还有|不够|不止|再多|更多|多来|多找|接着|补充|添加|下一批|这几首|这些|那些|一些|几首/g;
+  const CONTINUATION_RE = /再检索|再搜索|再找|再搜|再来|再给我|继续|还有|不够|不止|再多|更多|多来|多找|接着|补充|添加|下一批/;
+  // 「换一批 / 不对」是明确要推翻上一轮，不能算追加。
+  const RESET_RE = /换一批|不对|不是这个|重新找|重新搜|换个方向/;
+
+  /**
+   * 把「这次到底在找什么」压成几个可比较的 token。
+   *
+   * 只做字面归并（去掉口语前缀、op/ed 之类的格式词），不做语义判断：
+   * 目的是回答「这两句话说的是同一个东西吗」——"高达SEED op" vs "p4d op"
+   * 必须判成不同，否则就会把两个主题的结果拼到一张卡里。
+   */
+  function subjectTokens(text) {
+    const cleaned = String(text ?? '')
+      .replace(CONTINUATION_WORDS, ' ')
+      .replace(/[，,。.！!？?、；;：:]/g, ' ');
+    const tokens = new Set();
+    for (const word of fallbackKeyword(cleaned).toLowerCase().split(/\s+/)) {
+      const token = coreQuery(word);
+      if (token.length >= 2) tokens.add(token);
+    }
+    return tokens;
+  }
+
+  /** 两个主题是否有交集：相等，或一方包含另一方（"高达seed" ⊃ "seed"）。 */
+  function sameSubject(a, b) {
+    if (a.size === 0 || b.size === 0) return false;
+    for (const x of a) {
+      for (const y of b) {
+        if (x === y || x.includes(y) || y.includes(x)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 会话里最后一次检索的「主题 + 候选」。
+   * 主题优先用卡片上记下的 topic/need，老数据没有就往前找最近一条用户消息。
+   */
+  function lastSearchOf(messages) {
+    const list = Array.isArray(messages) ? messages : [];
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const card = list[i];
+      if (card?.kind !== 'plan-card') continue;
+      if (!Array.isArray(card.picks) || card.picks.length === 0) continue;
+
+      let need = card.plan?.need || '';
+      if (!need) {
+        for (let j = i - 1; j >= 0; j -= 1) {
+          if (list[j]?.role === 'user' && list[j]?.text) { need = list[j].text; break; }
+        }
+      }
+      return {
+        picks: card.picks,
+        subject: card.plan?.topic || need,
+        need,
+      };
+    }
+    return null;
+  }
+
+  /**
+   * 「这一轮要不要承接上一轮的结果」——模型的 carryOver 只是候选答案，
+   * 最终由这里拍板。
+   *
+   * 规则（按优先级）：
+   * 1. 用户说「换一批/不对」→ 不承接。
+   * 2. 用户这句话点了新的主体，而它和上一轮的主题对不上 → 不承接。
+   *     这是之前那个 bug 的根因：模型只要看到【上一轮】上下文就把 carryOver 判成 true，
+   *     "我想听p4d的op" 于是被拼上了上一轮 SEED 的结果。
+   * 3. 用户这句话没点新主体（"再来点""继续"）→ 承接。
+   * 4. 其余情况以模型的 carryOver 为准。
+   */
+  function resolveCarry(decision, userNeed, last) {
+    if (!last || last.picks.length === 0) {
+      return { carryOver: false, dropped: false };
+    }
+
+    if (RESET_RE.test(userNeed)) return { carryOver: false, dropped: false };
+
+    const next = subjectTokens(userNeed);
+    const prev = subjectTokens(last.subject || last.need || '');
+    // 上一轮没留下可比较的主题，这一轮却点名了新东西：宁可按新需求处理，也别拼错。
+    if (next.size > 0 && prev.size === 0) {
+      return { carryOver: false, dropped: decision?.carryOver === true };
+    }
+    const changedTopic = next.size > 0 && prev.size > 0 && !sameSubject(next, prev);
+    if (changedTopic) {
+      return {
+        carryOver: false,
+        // 模型判成追加了，但主题换了：记下来，思考记录里要解释为什么没接上一轮。
+        dropped: decision?.carryOver === true || CONTINUATION_RE.test(userNeed),
+      };
+    }
+
+    const wantsMore = next.size === 0
+      ? true
+      : (decision?.carryOver === true || CONTINUATION_RE.test(userNeed));
+    return { carryOver: wantsMore, dropped: false };
   }
 
   /**
@@ -916,11 +1020,19 @@ export function createChatAgent({
       const cartSongs = freshSession.cart || [];
 
       // 「再找一些」：承接上一轮结果，但已经在会话歌单里的不再重复列出。
-      const carryOver = decision?.carryOver === true;
+      // 模型说 carryOver=true 不算数，先确认这一轮说的还是不是上一轮那个主题。
+      const lastSearch = lastSearchOf(freshSession.messages);
+      const carry = resolveCarry(decision, userNeed, lastSearch);
+      const carryOver = carry.carryOver;
+      if (carry.dropped && decision?.carryOver === true) {
+        // 想承接但主题变了：把原因写进思考记录，免得用户以为系统把结果弄丢了。
+        decideText += `${decideText.trim() ? '\n\n' : ''}（上一轮找的是「${lastSearch?.subject || '另一批歌'}」，`
+          + `这一轮换了需求，已丢弃上一轮结果，只保留本次检索。）`;
+      }
       const cartIdSet = new Set(cartSongs.map(song => String(song.id)));
       const cartKeySet = new Set(cartSongs.map(song => String(trackKey(song))));
       const carried = carryOver
-        ? lastPlanPicks(freshSession.messages).filter(pick => (
+        ? (lastSearch?.picks || []).filter(pick => (
           !cartIdSet.has(String(pick.id))
           && !cartKeySet.has(String(trackKey(pick)))
         ))
@@ -971,6 +1083,9 @@ export function createChatAgent({
               }],
               targetCount: picks.length,
               direct: true,
+              // 记下「这轮找的是什么」：下一轮判断是不是同一需求时要用。
+              need: userNeed,
+              topic: decision?.topic || direct.query,
             },
             stats: {
               raw: direct.tracks.length,
@@ -1034,11 +1149,15 @@ export function createChatAgent({
       }
 
       if (searchResult.ok) {
+        const topic = String(decision?.topic || '').trim()
+          || searchResult.plan?.queries?.[0]?.keyword
+          || '';
         await append({
           role: 'agent',
           kind: 'plan-card',
           picks: searchResult.picks,
-          plan: searchResult.plan,
+          // need/topic 一起落库：下一轮判断「是不是同一需求」靠它，而不是靠模型猜。
+          plan: { ...searchResult.plan, need: userNeed, topic },
           stats: searchResult.stats,
           thinking: searchResult.thinking,
           timingsText: searchResult.thinking?.timingsText || '',

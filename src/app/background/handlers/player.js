@@ -28,6 +28,11 @@ export function createPlayerHandlers({ player, forwardToSidepanel }) {
         return { ok: true };
       },
 
+      PERSIST_PLAYBACK_MODE: (req) => {
+        player.savePlaybackMode(req.payload?.mode);
+        return { ok: true };
+      },
+
       LOAD_PLAYER_STATE: () => player.loadPrefs(),
 
       PLAYER_RESOLVE_URL: async (req) => ({

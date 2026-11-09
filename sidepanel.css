@@ -776,6 +776,37 @@ html.dark .player-cover-wrap {
   margin-top: 1px;
 }
 
+/* 播放模式：顺序 / 单曲 / 随机，点击循环切换 */
+.player-mode-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 24px; padding: 0 8px;
+  border: 1px solid var(--border);
+  background: var(--soft-bg);
+  color: var(--fg-2);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 10px; font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
+}
+.player-mode-btn:hover {
+  background: var(--soft-hover);
+  color: var(--fg-0);
+}
+.player-mode-btn:active { transform: scale(0.96); }
+.player-mode-btn[data-mode="repeat-one"],
+.player-mode-btn[data-mode="shuffle"] {
+  color: var(--brand-600);
+  background: var(--brand-50);
+  border-color: var(--brand-ring);
+}
+html.dark .player-mode-btn[data-mode="repeat-one"],
+html.dark .player-mode-btn[data-mode="shuffle"] {
+  color: var(--brand-400);
+}
+
 /* 进度条 */
 .player-progress-row {
   display: flex; align-items: center; gap: 8px;
