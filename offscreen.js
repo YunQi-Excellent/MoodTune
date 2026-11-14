@@ -12,6 +12,9 @@ import {
 } from './src/core/playback.js';
 import { trackKey } from './src/core/track.js';
 import { createAudioGraph } from './src/app/audio/graph.js';
+import { createLocalObjectUrl } from './src/app/audio/local-source.js';
+import { LOCAL_MUSIC_HANDLE_KEY } from './src/providers/local/constants.js';
+import { loadHandle, queryPermissionOnly } from './fs-manager.js';
 
 const audioEl = document.getElementById('offscreenAudio');
 
@@ -40,6 +43,8 @@ let advanceTimer = null;
 // 每次换歌自增；网络返回时用它判断这次加载是否已经过期。
 // 快速连点下一首时，先发出的请求可能后返回，不拦住就会把新歌覆盖回旧歌。
 let loadToken = 0;
+// 本地歌曲的 blob URL：换歌/换歌单时主动 revoke，避免长期占内存。
+let localObjectUrl = null;
 
 // 音频图
 let audioCtx = null;
@@ -244,6 +249,22 @@ function broadcastState() {
    音频源：由 background / provider 解析
    ===================================================== */
 
+function releaseLocalObjectUrl() {
+  if (!localObjectUrl) return;
+  try { URL.revokeObjectURL(localObjectUrl); } catch {}
+  localObjectUrl = null;
+}
+
+async function resolveLocalAudioUrl(path) {
+  const handle = await loadHandle(LOCAL_MUSIC_HANDLE_KEY);
+  if (!handle) throw new Error('还没有绑定本地音乐目录');
+  const permission = await queryPermissionOnly(handle, 'read');
+  if (permission !== 'granted') {
+    throw new Error('本地音乐目录权限已失效，请在侧边栏重新授权');
+  }
+  return createLocalObjectUrl(handle, path);
+}
+
 /* =====================================================
    播放控制
    ===================================================== */
@@ -269,14 +290,34 @@ async function loadAndPlay(index) {
   await ensureAudioGraph();
   if (token !== loadToken) return;
 
+  let createdLocalUrl = null;
   try {
     const resolved = await sendToBackground('PLAYER_RESOLVE_URL', { song });
     if (token !== loadToken) return;
-    if (!resolved?.ok || !resolved.url) {
+    const source = resolved?.source
+      || (resolved?.url ? { kind: 'url', url: resolved.url } : null);
+    if (!resolved?.ok || !source) {
       throw new Error(resolved?.error || '无法获取播放地址');
     }
 
-    audioEl.src = resolved.url;
+    let url;
+    if (source.kind === 'local') {
+      url = await resolveLocalAudioUrl(source.path);
+      createdLocalUrl = url;
+      if (token !== loadToken) {
+        try { URL.revokeObjectURL(url); } catch {}
+        return;
+      }
+    } else if (source.kind === 'url' && source.url) {
+      url = source.url;
+    } else {
+      throw new Error('不支持的播放源');
+    }
+
+    try { audioEl.pause(); } catch {}
+    releaseLocalObjectUrl();
+    if (source.kind === 'local') localObjectUrl = url;
+    audioEl.src = url;
     audioEl.load();
     await audioEl.play();
     if (token !== loadToken) return;
@@ -289,6 +330,12 @@ async function loadAndPlay(index) {
     if (token !== loadToken) return;
 
     console.warn('[Offscreen] 播放失败：', e?.message || e);
+    // 解析阶段就失败时不要误伤上一首仍在播放的 blob URL。
+    if (createdLocalUrl && localObjectUrl === createdLocalUrl) {
+      releaseLocalObjectUrl();
+    } else if (createdLocalUrl) {
+      try { URL.revokeObjectURL(createdLocalUrl); } catch {}
+    }
     state.loading = false;
     state.playing = false;
     broadcastState();
@@ -415,11 +462,16 @@ function cyclePlaybackMode() {
   return applied;
 }
 
-function setPlaylist(songs, autoPlay = true) {
+function setPlaylist(songs, autoPlay = true, startIndex) {
   loadToken += 1;
   clearAdvanceTimer();
   state.playlist = Array.isArray(songs) ? songs.slice() : [];
-  playback.setPlaylist(state.playlist.length);
+  const safeStart = Number.isInteger(startIndex)
+    && startIndex >= 0
+    && startIndex < state.playlist.length
+    ? startIndex
+    : -1;
+  playback.setPlaylist(state.playlist.length, { current: safeStart });
   state.currentIndex = -1;
   state.currentSong = null;
   state.playing = false;
@@ -429,11 +481,12 @@ function setPlaylist(songs, autoPlay = true) {
   try { audioEl.pause(); } catch {}
   audioEl.removeAttribute('src');
   audioEl.load();
+  releaseLocalObjectUrl();
   broadcastState();
 
   if (state.playlist.length > 0 && autoPlay) {
-    // 随机模式下新歌单从随机一首开始，而不是永远第一首。
-    loadAndPlay(playback.startIndex());
+    // 随机模式下新歌单从随机一首开始；显式点播时从用户点的那首开始。
+    loadAndPlay(safeStart >= 0 ? safeStart : playback.startIndex());
   }
 }
 
@@ -486,7 +539,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   switch (msg.type) {
     case 'PLAYER_SET_PLAYLIST':
-      setPlaylist(msg.payload.songs, msg.payload.autoPlay !== false);
+      setPlaylist(msg.payload.songs, msg.payload.autoPlay !== false, msg.payload.startIndex);
       sendResponse({ ok: true });
       break;
 

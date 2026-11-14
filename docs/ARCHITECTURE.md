@@ -85,7 +85,9 @@ sidepanel            background                      agent                      
 
 ```text
 sidepanel ──PLAYER_TOGGLE/NEXT/…──▶ background ──▶ offscreen
-offscreen ──PLAYER_RESOLVE_URL────▶ background ──▶ provider.resolveStreamUrl(song)
+offscreen ──PLAYER_RESOLVE_URL────▶ background ──▶ provider.resolvePlayback(song)
+                                                     ├─ 远程：{ kind:'url', url }
+                                                     └─ 本地：{ kind:'local', path }
 sidepanel ──setEqDirect───────────▶ background ──▶ offscreen（EQ_SET）
 sidepanel ──setEffectsDirect──────▶ background ──▶ offscreen（EFFECTS_SET）
 sidepanel ──applySoundPreset──────▶ background ──▶ EQ_SET + EFFECTS_SET（一次换一整套）
@@ -101,6 +103,13 @@ sidepanel ──applySoundPreset──────▶ background ──▶ EQ_SE
 - 切到随机模式时保留当前歌，只洗剩下的；从歌单直接点播也会同步随机游标。
 - 模式通过 `PERSIST_PLAYBACK_MODE` 回写 `playerPlaybackMode`，offscreen 启动时随音量/EQ 一起恢复。
 - 每次换歌都会生成自增 `loadToken`：解析地址可能乱序返回，过期请求直接丢弃，避免「第二次点击被第一次的迟到结果覆盖」。单击上一首直接切歌，不做「播放超过 3 秒先回本曲开头」的二次确认。
+
+本地音乐走同一条播放链路，但播放源是文件而不是 HTTP：
+
+- 侧边栏用 `showDirectoryPicker({ mode:'read' })` 选目录，`FileSystemDirectoryHandle` 存 IndexedDB（键 `musicLibrary`），索引存 `localMusicLibrary`。
+- 扫描在 background 完成（[scanner.js](../src/providers/local/scanner.js)），只收录浏览器能直接播放的扩展名；标签读取失败时用文件名兜底。
+- [local provider](../src/providers/local/index.js) 的 `resolvePlayback()` 返回 `{ kind:'local', path }`；offscreen 读取同一个目录句柄，生成 `blob:` URL 后交给 `<audio>`，换歌时 revoke 上一个 URL。
+- 本地音频同样经过 Web Audio 音频链，EQ/音效不需要平台支持。
 
 音频链在 [src/app/audio/graph.js](../src/app/audio/graph.js)：
 
@@ -127,11 +136,12 @@ source → preamp → EQ(10 段 peaking) → 宽度 → 串音 → 早期反射 
 | `savedPlaylists` | 保存的播放列表 |
 | `eqPresets` | EQ 预设 |
 | `currentEq` / `currentEffects` / `playerVolume` / `playerPlaybackMode` | 播放器偏好 |
+| `localMusicLibrary` | 本地音乐索引（路径、标签、时长）；不含音频文件本身 |
 | `llmConfig` | 大模型配置（options 页写入） |
 
 所有「读 → 改 → 写」都必须经过 [src/app/storage](../src/app/storage) 里的仓储，它们共享 [storage-queue.js](../src/app/storage/storage-queue.js) 的按键队列：同一个键串行、不同键并行。直接 `chrome.storage.local.set` 只允许出现在单键、无读改写的场景（偏好回写、文件夹恢复）。
 
-`fs-sync.js` 把上面四个业务键镜像到用户选择的文件夹（`playlists.json`、`eq-presets.json`、`sessions/*.json`、`.meta.json`），恢复时同样走 storage 队列。
+`fs-sync.js` 把上述四个业务键镜像到用户选择的文件夹（`playlists.json`、`eq-presets.json`、`sessions/*.json`、`.meta.json`），恢复时同样走 storage 队列；本地音乐索引与目录句柄不参与镜像（路径只对本机有效）。
 
 ### 消息协议
 

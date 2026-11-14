@@ -1,7 +1,8 @@
+import { createLocalProvider } from './local/index.js';
 import { createNeteaseProvider } from './netease/index.js';
 import { ProviderRegistry } from './registry.js';
 
-export { createNeteaseProvider, ProviderRegistry };
+export { createLocalProvider, createNeteaseProvider, ProviderRegistry };
 
 /**
  * 创建一组内置 provider。externalPlayer 由宿主注入，provider 本身不依赖 chrome.*。

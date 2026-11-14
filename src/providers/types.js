@@ -81,5 +81,6 @@ export const SEARCH_KINDS = Object.freeze(['tracks', 'playlists', 'artists', 'us
  * @property {(options?: {limit?: number, offset?: number, signal?: AbortSignal}) => Promise<{user: UserSummary, playlists: PlaylistSummary[]}>} getUserPlaylists
  * @property {(artistName: string, options?: {signal?: AbortSignal}) => Promise<ArtistTracksResult>} getArtistTracks
  * @property {(track: Track) => Promise<string>} resolveStreamUrl
+ * @property {(track: Track) => Promise<PlaybackSource>} [resolvePlayback] 本地/外部播放源，优先于 resolveStreamUrl
  * @property {(() => Promise<void>)} [pauseExternalPlayback]
  */

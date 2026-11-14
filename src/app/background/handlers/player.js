@@ -35,10 +35,16 @@ export function createPlayerHandlers({ player, forwardToSidepanel }) {
 
       LOAD_PLAYER_STATE: () => player.loadPrefs(),
 
-      PLAYER_RESOLVE_URL: async (req) => ({
-        ok: true,
-        url: await player.resolveStreamUrl(req.payload?.song),
-      }),
+      PLAYER_RESOLVE_URL: async (req) => {
+        // 兼容只实现了 resolveStreamUrl 的旧注入；新播放器走 resolvePlayback。
+        if (typeof player.resolvePlayback !== 'function') {
+          return { ok: true, url: await player.resolveStreamUrl(req.payload?.song) };
+        }
+        const source = await player.resolvePlayback(req.payload?.song);
+        // 远程平台维持旧的 { url } 形状；本地/外部分支再带 source。
+        if (source?.kind === 'url') return { ok: true, url: source.url };
+        return { ok: true, source };
+      },
 
       PLAYER_STATE_CHANGED: (req) => {
         forwardToSidepanel('PLAYER_STATE_CHANGED', req.payload);

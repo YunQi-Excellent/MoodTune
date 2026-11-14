@@ -1,5 +1,6 @@
 import { defaultEq as makeDefaultEq } from '../../core/eq.js';
 import { createId } from '../../core/ids.js';
+import { trackKey } from '../../core/track.js';
 
 /**
  * 会话服务：会话本身、购物车、结算与恢复。
@@ -59,12 +60,13 @@ export function createSessionService({
         if (!Array.isArray(songs) || songs.length === 0) return null;
         return store.mutate(sessionId, session => {
           session.cart = Array.isArray(session.cart) ? session.cart : [];
-          const existing = new Set(session.cart.map(song => song.id));
+          const identityOf = song => trackKey(song) || String(song.id);
+          const existing = new Set(session.cart.map(identityOf));
           let added = 0;
           for (const song of songs) {
-            if (existing.has(song.id)) continue;
+            if (existing.has(identityOf(song))) continue;
             session.cart.push(normalizeSong(song));
-            existing.add(song.id);
+            existing.add(identityOf(song));
             added += 1;
           }
           return { added, total: session.cart.length };
@@ -72,22 +74,22 @@ export function createSessionService({
       },
 
       remove(sessionId, songIds) {
-        const removeSet = new Set(songIds);
+        const removeSet = new Set((Array.isArray(songIds) ? songIds : []).map(String));
         return store.mutate(sessionId, session => {
-          session.cart = (session.cart || []).filter(song => !removeSet.has(song.id));
+          session.cart = (session.cart || []).filter(song => !removeSet.has(String(song.id)));
           return { total: session.cart.length };
         });
       },
 
       reorder(sessionId, orderedIds) {
         return store.mutate(sessionId, session => {
-          const cartById = new Map((session.cart || []).map(song => [song.id, song]));
+          const cartById = new Map((session.cart || []).map(song => [String(song.id), song]));
           const next = [];
           for (const id of orderedIds) {
-            const song = cartById.get(id);
+            const song = cartById.get(String(id));
             if (song) {
               next.push(song);
-              cartById.delete(id);
+              cartById.delete(String(id));
             }
           }
           for (const song of cartById.values()) next.push(song);
