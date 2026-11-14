@@ -1,5 +1,10 @@
 import { createId } from '../../core/ids.js';
 import { CURRENT_SESSION_KEY, SESSIONS_KEY } from './keys.js';
+import {
+  parseSessionJsonl,
+  serializeSessionJsonl,
+  sessionJsonlFilename,
+} from './session-jsonl.js';
 
 /**
  * 日志型会话仓储（IndexedDB）。
@@ -32,6 +37,7 @@ const META_FIELDS = new Set([
   'id', 'name', 'createdAt', 'updatedAt', 'lastActiveAt',
   'lastSeq', 'messageCount', 'cartCount', 'songCount', 'resultCount',
   'hasResult', 'hasEq', 'archivedAt', 'pinnedAt',
+  'summary', 'summaryThroughSeq',
 ]);
 
 function normalizeName(value, fallback = DEFAULT_SESSION_NAME) {
@@ -126,6 +132,8 @@ function emptyMeta(id, name, at) {
     hasEq: false,
     archivedAt: null,
     pinnedAt: null,
+    summary: null,
+    summaryThroughSeq: null,
   };
 }
 
@@ -235,9 +243,11 @@ export function createSessionLogStore({
           songCount: Number(raw?.songCount) || resultCountOf(state.result),
           resultCount: resultCountOf(state.result),
           hasResult: hasResultOf(state),
-          hasEq: Boolean(state.cartEq || state.result?.eq),
+          hasEq: Boolean(state.cartEq || state.result?.eq || state.eq),
           archivedAt: raw?.archivedAt ?? null,
           pinnedAt: raw?.pinnedAt ?? null,
+          summary: raw?.summary ?? null,
+          summaryThroughSeq: Number(raw?.summaryThroughSeq ?? raw?.summary?.throughSeq) || null,
         };
 
         sessionStore.put(meta);
@@ -343,7 +353,7 @@ export function createSessionLogStore({
       cartCount: Array.isArray(state?.cart) ? state.cart.length : (Number(meta?.cartCount) || 0),
       resultCount: resultCountOf(state?.result),
       hasResult: hasResultOf(state),
-      hasEq: Boolean(state?.cartEq || state?.result?.eq),
+      hasEq: Boolean(state?.cartEq || state?.result?.eq || state?.eq),
       messages,
       hasMoreMessages: Boolean(page.hasMore),
       oldestSeq: page.oldestSeq ?? (messages[0]?.seq ?? null),
@@ -402,7 +412,7 @@ export function createSessionLogStore({
     cartCount: Array.isArray(state.cart) ? state.cart.length : 0,
     resultCount: resultCountOf(state.result),
     hasResult: hasResultOf(state),
-    hasEq: Boolean(state.cartEq || state.result?.eq),
+    hasEq: Boolean(state.cartEq || state.result?.eq || state.eq),
   });
 
   const emit = (type, sessionId, extra = {}) => {
@@ -675,6 +685,94 @@ export function createSessionLogStore({
         emit('update', sessionId);
         return output === undefined ? compose(nextMeta, nextState) : output;
       });
+    },
+
+    /**
+     * 写入一个完整会话（JSONL 导入 / 单会话恢复）。
+     * 默认不覆盖同 id 会话：冲突时分配新 id，并可通过 overwrite=true 替换。
+     */
+    async putSession(raw, { overwrite = false, setCurrent = true } = {}) {
+      const at = Number(raw?.createdAt) || now();
+      return runTx([META, SESSIONS, MESSAGES, STATES], 'readwrite', async tx => {
+        const requestedId = String(raw?.id || '');
+        let id = requestedId;
+        if (!id) {
+          do { id = newId('sess'); } while (await getMeta(tx, id));
+        }
+        let existing = requestedId ? await getMeta(tx, id) : null;
+        let replaced = false;
+
+        if (existing && !overwrite) {
+          do { id = newId('sess'); } while (await getMeta(tx, id));
+        } else if (existing) {
+          replaced = true;
+          tx.objectStore(MESSAGES).delete(
+            keyRange.bound([id, 1], [id, Number.MAX_SAFE_INTEGER]),
+          );
+          tx.objectStore(STATES).delete(id);
+        }
+
+        const messages = Array.isArray(raw?.messages) ? raw.messages : [];
+        const stored = messages.map((message, index) => ({
+          ...(message && typeof message === 'object' ? message : {}),
+          id: message?.id || newId('msg'),
+          sessionId: id,
+          seq: index + 1,
+        }));
+        const state = {
+          sessionId: id,
+          cart: Array.isArray(raw?.cart) ? raw.cart : [],
+          cartEq: raw?.cartEq ?? null,
+          result: raw?.result ?? null,
+          eq: raw?.eq ?? null,
+          playlistSnapshot: raw?.playlistSnapshot ?? null,
+        };
+        const summary = raw?.summary && typeof raw.summary === 'object' ? raw.summary : null;
+        const meta = {
+          ...emptyMeta(id, normalizeName(raw?.name), at),
+          updatedAt: Number(raw?.updatedAt || raw?.lastActiveAt) || at,
+          lastActiveAt: Number(raw?.lastActiveAt) || at,
+          lastSeq: stored.length,
+          messageCount: stored.length,
+          cartCount: state.cart.length,
+          songCount: Number(raw?.songCount) || resultCountOf(state.result),
+          resultCount: resultCountOf(state.result),
+          hasResult: hasResultOf(state),
+          hasEq: Boolean(state.cartEq || state.result?.eq || state.eq),
+          archivedAt: raw?.archivedAt ?? null,
+          pinnedAt: raw?.pinnedAt ?? null,
+          summary,
+          summaryThroughSeq: Number(raw?.summaryThroughSeq ?? summary?.throughSeq) || null,
+        };
+
+        tx.objectStore(SESSIONS).put(meta);
+        tx.objectStore(STATES).put(state);
+        for (const message of stored) tx.objectStore(MESSAGES).put(message);
+        if (setCurrent) {
+          tx.objectStore(META).put(metaRecord(CURRENT_SESSION_KEY, id));
+        }
+        emit('import', id);
+        return { ...compose(meta, state, { messages: stored.map(stripMessage) }), replaced };
+      });
+    },
+
+    async exportJsonl(id) {
+      const session = await store.get(id);
+      if (!session) return null;
+      return {
+        filename: sessionJsonlFilename(session),
+        content: serializeSessionJsonl(session),
+      };
+    },
+
+    async importJsonl(text, options = {}) {
+      const parsed = parseSessionJsonl(text);
+      const session = await store.putSession(parsed.session, options);
+      return {
+        session,
+        warnings: parsed.warnings,
+        version: parsed.version,
+      };
     },
 
     async replaceAll(sessions, currentId) {

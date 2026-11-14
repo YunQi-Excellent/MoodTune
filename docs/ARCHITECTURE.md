@@ -152,7 +152,20 @@ source → preamp → EQ(10 段 peaking) → 宽度 → 串音 → 早期反射 
 
 `chrome.storage.local` 的其余业务键仍共享 [storage-queue.js](../src/app/storage/storage-queue.js) 的按键队列：同一个键串行、不同键并行。直接 `chrome.storage.local.set` 只允许出现在单键、无读改写的场景（偏好回写、文件夹恢复）。
 
-`fs-sync.js` 通过 `setSessionBridge()` 接会话仓储，把数据镜像到用户选择的文件夹（`playlists.json`、`eq-presets.json`、`sessions/*.json`、`.meta.json`）；恢复时调用仓储的 `replaceAll`，不再写回旧 `chatSessions`。本地音乐索引与目录句柄不参与镜像（路径只对本机有效）。
+`fs-sync.js` 通过 `setSessionBridge()` 接会话仓储，把数据镜像到用户选择的文件夹（`playlists.json`、`eq-presets.json`、`sessions/*.jsonl`、`.meta.json`）；恢复时调用仓储的 `replaceAll`，不再写回旧 `chatSessions`。本地音乐索引与目录句柄不参与镜像（路径只对本机有效）。
+
+每个会话文件采用 JSONL 格式（[session-jsonl.js](../src/app/storage/session-jsonl.js)）：
+
+```jsonl
+{"type":"session","version":2,"id":"sess-...","name":"...","createdAt":...}
+{"type":"state","cart":[],"cartEq":null,"result":null}
+{"type":"message","seq":1,"id":"msg-...","role":"user","kind":"text","text":"..."}
+{"type":"summary","throughSeq":40,"text":"..."}
+```
+
+- 第一行必须是 `session` 头；`state` 保存购物车/结算投影；`message` 按 `seq` 排序；`summary` 预留给后续压缩。
+- 侧边栏支持单会话「导出」和文件「导入」；导入时 id 冲突默认新建会话，也可显式覆盖。
+- 文件夹同步优先读 `.jsonl`，兼容旧的 `<id>.json`；push 会写 `.jsonl` 并清理同 id 旧 `.json`。
 
 ### 消息协议
 
@@ -160,6 +173,7 @@ source → preamp → EQ(10 段 peaking) → 宽度 → 串音 → 早期反射 
 - 响应统一信封：成功 `{ ok: true, ... }`，失败 `{ ok: false, error }`（fs 系列历史原因用 `reason`）
 - 事件：`{ target: 'sidepanel', type: 'CHAT_STREAM_CHUNK' | 'SESSION_CHANGED' | … }`
 - 会话分页：`getCurrentSession` / `switchSession` 返回最后一页；`loadEarlierMessages` 按 `beforeSeq` 向前翻页。
+- 会话导入导出：`exportSessionJsonl` 返回 JSONL 文本与文件名；`importSessionJsonl` 解析并写入新会话。
 
 新增消息只需在 [handlers](../src/app/background/handlers) 里加一个方法并合并进路由，不要再写 if 分支。
 

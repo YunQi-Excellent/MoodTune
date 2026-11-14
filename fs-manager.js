@@ -111,6 +111,23 @@ export async function writeJson(dirHandle, filename, data) {
   await writable.close();
 }
 
+export async function readText(dirHandle, filename) {
+  try {
+    const fh = await dirHandle.getFileHandle(filename);
+    const file = await fh.getFile();
+    return await file.text();
+  } catch {
+    return null;
+  }
+}
+
+export async function writeText(dirHandle, filename, text) {
+  const fh = await dirHandle.getFileHandle(filename, { create: true });
+  const writable = await fh.createWritable();
+  await writable.write(String(text));
+  await writable.close();
+}
+
 export async function removeFile(dirHandle, filename) {
   try {
     await dirHandle.removeEntry(filename);

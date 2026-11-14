@@ -77,6 +77,10 @@ export function createSessionService({
     recentCurrent: limit => (
       store.getCurrentPage ? store.getCurrentPage({ limit }) : store.getCurrent()
     ),
+    exportJsonl: id => (store.exportJsonl ? store.exportJsonl(id) : null),
+    importJsonl: (text, options) => (
+      store.importJsonl ? store.importJsonl(text, options) : null
+    ),
 
     async loadEarlier(sessionId, beforeSeq, limit) {
       if (!store.getPage) return null;

@@ -13,6 +13,15 @@ export function createSessionHandlers(sessions) {
       session: await (sessions.currentPage ? sessions.currentPage() : sessions.current()),
     }),
     getSessionState: async (req) => ({ ok: true, session: await sessions.state(req.sessionId) }),
+    exportSessionJsonl: async (req) => {
+      const result = await sessions.exportJsonl(req.id);
+      if (!result) return { ok: false, error: '找不到这个会话' };
+      return { ok: true, ...result };
+    },
+    importSessionJsonl: async (req) => ({
+      ok: true,
+      ...(await sessions.importJsonl(req.content, { overwrite: Boolean(req.overwrite) })),
+    }),
     loadEarlierMessages: async (req) => ({
       ok: true,
       ...(await sessions.loadEarlier(req.sessionId, req.beforeSeq, req.limit)),

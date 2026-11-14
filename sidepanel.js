@@ -94,6 +94,50 @@ function closeSessionDrawer() {
   $('#backdrop').classList.remove('show');
 }
 $('#closeSessionDrawer').addEventListener('click', closeSessionDrawer);
+$('#importSessionBtn').addEventListener('click', () => $('#importSessionFile').click());
+$('#importSessionFile').addEventListener('change', async event => {
+  const input = event.target;
+  const file = input.files?.[0];
+  input.value = '';
+  await importSessionFile(file);
+});
+
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: 'application/jsonl;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function importSessionFile(file) {
+  if (!file) return;
+  if (file.size > 20 * 1024 * 1024) {
+    pushLog('err', '导入失败：文件超过 20MB');
+    return;
+  }
+  try {
+    const content = await file.text();
+    const r = await sendMsg({ action: 'importSessionJsonl', content });
+    if (!r?.ok) {
+      pushLog('err', '导入失败：' + (r?.error || '未知'));
+      return;
+    }
+    if (Array.isArray(r.warnings) && r.warnings.length > 0) {
+      pushLog('stage', `导入警告：${r.warnings.slice(0, 3).join('；')}`);
+    }
+    await refreshSessions();
+    await loadCurrentSession();
+    closeSessionDrawer();
+    pushLog('ok', `已导入会话「${r.session?.name || '未命名'}」`);
+  } catch (err) {
+    pushLog('err', '导入失败：' + (err?.message || err));
+  }
+}
 
 async function refreshSessions() {
   const r = await sendMsg({ action: 'listSessions' });
@@ -132,6 +176,7 @@ function renderSessionList() {
         <div class="actions">
           ${restoreBtn}
           <button data-act="switch" data-id="${s.id}">切换</button>
+          <button data-act="export" data-id="${s.id}">导出</button>
           <button data-act="rename" data-id="${s.id}">改名</button>
           <button data-act="delete" data-id="${s.id}" class="danger">删除</button>
         </div>
@@ -146,6 +191,24 @@ $('#sessionList').addEventListener('click', async e => {
   const btn = e.target.closest('button');
   const act = btn?.getAttribute('data-act');
 
+  if (act === 'export') {
+    btn.disabled = true;
+    btn.textContent = '导出中…';
+    try {
+      const r = await sendMsg({ action: 'exportSessionJsonl', id });
+      if (r?.ok) {
+        downloadText(r.filename, r.content);
+        pushLog('ok', `已导出「${r.filename}」`);
+      } else {
+        pushLog('err', '导出失败：' + (r?.error || '未知'));
+      }
+    } catch (err) {
+      pushLog('err', '导出失败：' + (err?.message || err));
+    }
+    btn.disabled = false;
+    btn.textContent = '导出';
+    return;
+  }
   if (act === 'restore') {
     btn.disabled = true; btn.textContent = '恢复中…';
     try {
