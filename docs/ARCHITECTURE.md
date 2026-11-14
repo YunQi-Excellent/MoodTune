@@ -174,6 +174,16 @@ source → preamp → EQ(10 段 peaking) → 宽度 → 串音 → 早期反射 
 - 列表默认只返回未归档会话；`archive` 设置 `archivedAt`，若归档的是当前会话则自动切到下一个未归档会话。删除只允许针对已归档会话，避免误删。
 - 存储面板使用 `navigator.storage.estimate()` 展示 origin 用量/配额，并汇总会话数、归档数、消息数和估算字节数；`chrome.storage.local.getBytesInUse` 可用时一并展示。
 
+### 会话压缩
+
+压缩是“投影”，不是删除：原始消息仍然保留，只在 `sessions`/JSONL 里增加 `summary` 和 `summaryThroughSeq`。
+
+- 一轮对话结束后自动检查未摘要消息数；达到 `minMessages=60` 或字符数超过阈值时，调用一次模型，把较早消息压成摘要，保留最近 `keepRecent=20` 条。
+- 手动「压缩」按钮可以跳过阈值，但仍保留最近 20 条。
+- 聊天上下文只使用「摘要 + 最近消息」；`buildFollowUpContext` 会过滤掉 `seq <= summaryThroughSeq` 的旧消息，避免重复。
+- 摘要失败只记日志，不阻塞聊天；下一次达到阈值再重试。
+- 会话列表显示「摘要至 N」，JSONL 里对应一行 `type=summary`。
+
 ### 消息协议
 
 - 请求两种形状：`{ action: 'listSessions' }` 或 `{ target: 'background', type: 'PLAYER_TOGGLE' }`

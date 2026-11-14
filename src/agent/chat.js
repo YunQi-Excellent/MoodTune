@@ -14,6 +14,11 @@ import {
   selectPicks,
 } from './recommendation.js';
 import { EXTRACT_SYSTEM, DECIDE_SYSTEM, RERANK_SYSTEM } from './prompts.js';
+import {
+  COMPACTION_CONFIG,
+  selectCompactionRange,
+  summarizeSession,
+} from './summarizer.js';
 
 const HELP_TEXT = '可以跟我说：想听什么场景的歌（"深夜写代码"）、想调整听感（"低频轻一点"）、或者"把当前列表保存成 XX"。';
 
@@ -103,6 +108,9 @@ export function createChatAgent({
   if (!player) throw new Error('createChatAgent 需要 player');
 
   let currentAbort = null;
+  let activeSessionId = null;
+  let compacting = false;
+  let compactAbort = null;
 
   const requireProvider = () => {
     const provider = providers.primary;
@@ -159,7 +167,7 @@ export function createChatAgent({
             role: 'user',
             content: [
               providerContext,
-              followUp ? `【上一轮】\n${followUp}` : '',
+              followUp ? `【会话上下文】\n${followUp}` : '',
               `用户需求：${userNeed}`,
             ].filter(Boolean).join('\n'),
           },
@@ -269,18 +277,26 @@ export function createChatAgent({
   }
 
   /**
-   * 拼一段「上一轮」上下文给决策模型。
+   * 拼一段给决策模型的会话上下文。
    *
-   * 决策调用本身不带对话历史，而「再检索一下，不止这几首」这种话脱离了上一轮
-   * 就完全没法理解：模型不知道用户原来要什么，也不知道哪些词已经搜过。
+   * 有摘要时先放摘要，再只取摘要之后的消息找最后一张结果卡，避免把
+   * 已经被压缩的旧内容重复塞回去；没有摘要时保持原来的单轮行为。
    */
-  function buildFollowUpContext(messages) {
-    const list = Array.isArray(messages) ? messages : [];
+  function buildFollowUpContext(messages, summary = null) {
+    const all = Array.isArray(messages) ? messages : [];
+    const throughSeq = Number(summary?.throughSeq) || 0;
+    const list = throughSeq > 0
+      ? all.filter(message => (Number(message?.seq) || 0) > throughSeq)
+      : all;
+    const parts = [];
+
+    if (summary?.text) parts.push(`更早对话摘要：${String(summary.text).slice(0, 1200)}`);
+
     let cardIndex = -1;
     for (let i = list.length - 1; i >= 0; i -= 1) {
       if (list[i]?.kind === 'plan-card') { cardIndex = i; break; }
     }
-    if (cardIndex < 0) return '';
+    if (cardIndex < 0) return parts.filter(Boolean).join('\n');
 
     let previousNeed = '';
     for (let i = cardIndex - 1; i >= 0; i -= 1) {
@@ -294,12 +310,83 @@ export function createChatAgent({
       .slice(0, 4);
     const names = (card.picks || []).slice(0, 3).map(pick => pick.name).filter(Boolean);
 
-    return [
+    parts.push(
       previousNeed ? `上一轮用户需求：${previousNeed}` : '',
       card.plan?.topic ? `上一轮主题：${card.plan.topic}` : '',
       queries.length ? `上一轮用过的检索词：${queries.join(' / ')}` : '',
       names.length ? `上一轮结果：${names.join('、')} 等 ${(card.picks || []).length} 首` : '',
-    ].filter(Boolean).join('\n');
+    );
+
+    return parts.filter(Boolean).join('\n');
+  }
+
+  /**
+   * 对较早消息生成摘要检查点。原始消息不删除，只更新 summary 投影。
+   * force=true 用于手动压缩，跳过阈值但仍保留最近消息。
+   */
+  async function compactSession(sessionId, { force = false } = {}) {
+    if (!sessionId || compacting) return null;
+    compacting = true;
+    let timer = null;
+
+    try {
+      const state = await sessions.state(sessionId);
+      if (!state) return null;
+      const messageCount = Number(state.messageCount) || 0;
+      const bytes = Number(state.bytes) || 0;
+      const throughSeq = Number(state.summaryThroughSeq) || 0;
+      const pending = Math.max(0, messageCount - throughSeq);
+      // 用“尚未被摘要覆盖的消息数”判断，避免压缩后每轮都再压一条。
+      if (!force
+        && pending < COMPACTION_CONFIG.minMessages
+        && (bytes < COMPACTION_CONFIG.maxChars || pending <= COMPACTION_CONFIG.keepRecent * 2)) {
+        return null;
+      }
+
+      const full = await sessions.get(sessionId);
+      if (!full) return null;
+      // 老数据可能没有 seq；压缩前补一个稳定序号，保证阈值/截断可计算。
+      const messages = (full.messages || []).map((message, index) => (
+        Number.isFinite(Number(message?.seq))
+          ? message
+          : { ...message, seq: index + 1 }
+      ));
+      const range = selectCompactionRange(messages, {
+        summaryThroughSeq: full.summaryThroughSeq || 0,
+        force,
+      });
+      if (!range) return null;
+
+      compactAbort = new AbortController();
+      timer = setTimeout(() => {
+        try { compactAbort.abort(); } catch {}
+      }, 25_000);
+
+      const text = await summarizeSession({
+        llm,
+        messages: range.messages,
+        previousSummary: full.summary?.text || '',
+        signal: compactAbort.signal,
+      });
+      if (!text) return null;
+
+      const summary = {
+        text,
+        throughSeq: range.throughSeq,
+        createdAt: now(),
+        model: null,
+      };
+      await sessions.setSummary(sessionId, summary);
+      notify('SESSION_COMPACTED', { sessionId, summary });
+      return summary;
+    } catch (error) {
+      if (!compactAbort?.signal.aborted) log.warn('[compact] 摘要失败：', error);
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+      compacting = false;
+      compactAbort = null;
+    }
   }
 
   // 「再来点 / 不止这几首」这类纯粹的追加措辞。
@@ -818,6 +905,7 @@ export function createChatAgent({
     if (sessionId) session = await sessions.recent(sessionId, 60);
     if (!session) session = await sessions.recentCurrent(60);
     if (!session) session = await sessions.create(userNeed.slice(0, 20) || '新会话');
+    activeSessionId = session.id;
 
     const nextMessageId = () => newId('msg');
     const append = message => sessions.appendMessage(session.id, {
@@ -868,7 +956,7 @@ export function createChatAgent({
         providerContext,
         collectDecide,
         deadline,
-        buildFollowUpContext(session.messages),
+        buildFollowUpContext(session.messages, session.summary),
       ).catch(() => null);
 
       // 上一轮的结果卡：用于识别「再找一些」以及防止直搜原样重复上一轮。
@@ -1178,9 +1266,16 @@ export function createChatAgent({
   }
 
   function abort() {
-    if (!currentAbort) return false;
-    try { currentAbort.abort(); } catch {}
-    return true;
+    let aborted = false;
+    if (compactAbort) {
+      try { compactAbort.abort(); } catch {}
+      aborted = true;
+    }
+    if (currentAbort) {
+      try { currentAbort.abort(); } catch {}
+      aborted = true;
+    }
+    return aborted;
   }
 
   return {
@@ -1194,6 +1289,7 @@ export function createChatAgent({
      */
     async start(payload = {}) {
       abort();
+      activeSessionId = null;
       const controller = new AbortController();
       currentAbort = controller;
 
@@ -1202,9 +1298,19 @@ export function createChatAgent({
       } catch (error) {
         if (!controller.signal.aborted) log.warn('[chat] 流程失败：', error);
       } finally {
-        if (currentAbort === controller) currentAbort = null;
+        const ownsRun = currentAbort === controller;
+        if (ownsRun) currentAbort = null;
+        if (ownsRun && !controller.signal.aborted && activeSessionId) {
+          try {
+            await compactSession(activeSessionId);
+          } catch (error) {
+            log.warn('[compact] 检查失败：', error);
+          }
+        }
       }
     },
+
+    compact: sessionId => compactSession(sessionId, { force: true }),
 
     abort,
   };

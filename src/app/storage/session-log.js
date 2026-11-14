@@ -787,6 +787,36 @@ export function createSessionLogStore({
       });
     },
 
+    async setSummary(sessionId, summary) {
+      return runTx([SESSIONS], 'readwrite', async tx => {
+        const meta = await getMeta(tx, sessionId);
+        if (!meta) throw new Error('找不到会话');
+        const nextSummary = summary && typeof summary === 'object'
+          ? {
+            text: String(summary.text || ''),
+            throughSeq: Number(summary.throughSeq) || 0,
+            createdAt: Number(summary.createdAt) || now(),
+            model: summary.model || null,
+          }
+          : null;
+        const next = {
+          ...meta,
+          summary: nextSummary,
+          summaryThroughSeq: nextSummary?.throughSeq || null,
+          updatedAt: now(),
+          bytes: Math.max(
+            0,
+            (Number(meta.bytes) || 0)
+              - estimateBytes(meta.summary)
+              + estimateBytes(nextSummary),
+          ),
+        };
+        tx.objectStore(SESSIONS).put(next);
+        emit('compact', sessionId);
+        return publicMeta(next);
+      });
+    },
+
     async archive(id) {
       return runTx([META, SESSIONS], 'readwrite', async tx => {
         const meta = await getMeta(tx, id);

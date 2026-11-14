@@ -225,6 +225,10 @@ function renderSessionList() {
     const hasEq = (s.hasEq ?? Boolean(s.result?.eq || s.cartEq)) ? '🎛' : '';
     const cartHint = cartCount > 0 ? `· 🎵${cartCount}` : '';
     const resultHint = resultCount > 0 ? `· 结算${resultCount}` : '';
+    const summaryHint = s.summaryThroughSeq ? `· 摘要至 ${s.summaryThroughSeq}` : '';
+    const compactBtn = count >= 30
+      ? `<button data-act="compact" data-id="${s.id}">压缩</button>`
+      : '';
     const restoreBtn = hasResult
       ? `<button data-act="restore" data-id="${s.id}" class="primary">↺ 恢复</button>`
       : '';
@@ -244,12 +248,13 @@ function renderSessionList() {
           ${active ? '<span class="badge">当前</span>' : ''}
           ${archived ? '<span class="badge yellow">归档</span>' : ''}
         </div>
-        <div class="meta">${count} 条 ${hasEq} ${cartHint} ${resultHint} · ${escapeHtml(fmtDate(s.lastActiveAt))}</div>
+        <div class="meta">${count} 条 ${hasEq} ${cartHint} ${resultHint} ${summaryHint} · ${escapeHtml(fmtDate(s.lastActiveAt))}</div>
         ${snippet}
         <div class="actions">
           ${restoreBtn}
           <button data-act="switch" data-id="${s.id}">切换</button>
           <button data-act="export" data-id="${s.id}">导出</button>
+          ${compactBtn}
           <button data-act="rename" data-id="${s.id}">改名</button>
           ${archiveBtn}
           ${deleteBtn}
@@ -281,6 +286,30 @@ $('#sessionList').addEventListener('click', async e => {
     }
     btn.disabled = false;
     btn.textContent = '导出';
+    return;
+  }
+  if (act === 'compact') {
+    btn.disabled = true;
+    btn.textContent = '压缩中…';
+    try {
+      const r = await sendMsg({ action: 'compactSession', sessionId: id });
+      if (r?.ok && r.compacted) {
+        if (state.currentSession?.id === id) {
+          state.currentSession.summary = r.summary;
+          state.currentSession.summaryThroughSeq = r.summary?.throughSeq;
+        }
+        pushLog('ok', `已压缩到第 ${r.summary?.throughSeq || '?'} 条`);
+        await refreshSessions();
+      } else if (r?.ok) {
+        pushLog('stage', '消息还不够多，暂时不需要压缩');
+      } else {
+        pushLog('err', '压缩失败：' + (r?.error || '未知'));
+      }
+    } catch (err) {
+      pushLog('err', '压缩失败：' + (err?.message || err));
+    }
+    btn.disabled = false;
+    btn.textContent = '压缩';
     return;
   }
   if (act === 'archive' || act === 'unarchive') {
@@ -1878,6 +1907,16 @@ chrome.runtime.onMessage.addListener((msg) => {
       }
     }
     if (payload.type === 'update') updateCartUI();
+    if ($('#session-drawer').classList.contains('open')) refreshSessions();
+    return;
+  }
+  if (msg.target === 'sidepanel' && msg.type === 'SESSION_COMPACTED') {
+    const payload = msg.payload || {};
+    if (payload.sessionId && payload.sessionId === state.currentSession?.id && payload.summary) {
+      state.currentSession.summary = payload.summary;
+      state.currentSession.summaryThroughSeq = payload.summary.throughSeq;
+      pushLog('ok', `会话已压缩到第 ${payload.summary.throughSeq} 条`);
+    }
     if ($('#session-drawer').classList.contains('open')) refreshSessions();
     return;
   }

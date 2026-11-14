@@ -82,6 +82,12 @@ export function createSessionService({
       store.importJsonl ? store.importJsonl(text, options) : null
     ),
     search: (query, options) => (store.search ? store.search(query, options) : []),
+    setSummary: (id, summary) => (store.setSummary
+      ? store.setSummary(id, summary)
+      : store.update(id, {
+        summary,
+        summaryThroughSeq: summary?.throughSeq || null,
+      })),
     archive: id => (store.archive ? store.archive(id) : null),
     unarchive: id => (store.unarchive ? store.unarchive(id) : null),
     stats: () => (store.getStorageStats ? store.getStorageStats() : null),
