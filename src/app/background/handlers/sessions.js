@@ -7,7 +7,17 @@ export function createSessionHandlers(sessions) {
   if (!sessions) throw new Error('createSessionHandlers 需要 sessions');
 
   return {
-    listSessions: async () => ({ ok: true, sessions: await sessions.list() }),
+    listSessions: async (req = {}) => ({
+      ok: true,
+      sessions: await sessions.list({ includeArchived: Boolean(req.includeArchived) }),
+    }),
+    searchSessions: async (req) => ({
+      ok: true,
+      sessions: await sessions.search(req.query, { limit: req.limit }),
+    }),
+    archiveSession: async (req) => ({ ok: true, session: await sessions.archive(req.id) }),
+    unarchiveSession: async (req) => ({ ok: true, session: await sessions.unarchive(req.id) }),
+    getStorageStats: async () => ({ ok: true, stats: await sessions.stats() }),
     getCurrentSession: async () => ({
       ok: true,
       session: await (sessions.currentPage ? sessions.currentPage() : sessions.current()),

@@ -50,6 +50,7 @@ const state = {
   },
   messageNodes: new Map(),
   thinkingRecords: [],
+  showArchived: false,
   running: false,
   // 用户手动中断后忽略迟到的思考/进度事件，避免按钮又被重新点亮
   stopped: false,
@@ -101,6 +102,19 @@ $('#importSessionFile').addEventListener('change', async event => {
   input.value = '';
   await importSessionFile(file);
 });
+$('#sessionSearch').addEventListener('input', () => {
+  if (sessionSearchTimer) clearTimeout(sessionSearchTimer);
+  sessionSearchTimer = setTimeout(() => { refreshSessions(); }, 200);
+});
+$('#toggleArchivedBtn').addEventListener('click', () => {
+  state.showArchived = !state.showArchived;
+  $('#toggleArchivedBtn').textContent = state.showArchived ? '隐藏归档' : '显示归档';
+  refreshSessions();
+});
+$('#refreshStorageBtn').addEventListener('click', () => {
+  refreshSessions();
+  refreshStorageStats();
+});
 
 function downloadText(filename, text) {
   const blob = new Blob([text], { type: 'application/jsonl;charset=utf-8' });
@@ -139,21 +153,69 @@ async function importSessionFile(file) {
   }
 }
 
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+async function refreshStorageStats() {
+  const usageEl = $('#storageUsage');
+  const metaEl = $('#storageMeta');
+  const barEl = $('#storageBar');
+  if (!usageEl || !metaEl || !barEl) return;
+
+  const r = await sendMsg({ action: 'getStorageStats' });
+  if (!r?.ok || !r.stats) {
+    usageEl.textContent = '统计失败';
+    return;
+  }
+
+  const stats = r.stats;
+  const used = Number(stats.usage) || Number(stats.bytes) || 0;
+  const quota = Number(stats.quota) || 0;
+  usageEl.textContent = quota > 0
+    ? `${formatBytes(used)} / ${formatBytes(quota)}`
+    : formatBytes(used);
+
+  const percent = quota > 0 ? Math.min(100, (used / quota) * 100) : 0;
+  barEl.style.width = `${percent}%`;
+
+  const chromePart = Number.isFinite(stats.chromeBytes)
+    ? ` · chrome.storage ${formatBytes(stats.chromeBytes)}`
+    : '';
+  const top = Array.isArray(stats.top) ? stats.top[0] : null;
+  const topPart = top
+    ? ` · 最大「${String(top.name || '').slice(0, 12)}」${formatBytes(top.bytes)}`
+    : '';
+  metaEl.textContent = `${stats.sessions || 0} 个会话（${stats.archived || 0} 归档）`
+    + ` · ${stats.messages || 0} 条消息 · 会话估算 ${formatBytes(stats.bytes)}${chromePart}${topPart}`;
+}
+
+let sessionSearchTimer = null;
 async function refreshSessions() {
-  const r = await sendMsg({ action: 'listSessions' });
+  const query = ($('#sessionSearch')?.value || '').trim();
+  const r = query
+    ? await sendMsg({ action: 'searchSessions', query, limit: 50 })
+    : await sendMsg({ action: 'listSessions', includeArchived: state.showArchived });
   if (!r?.ok) return;
-  state.sessions = r.sessions;
+  state.sessions = r.sessions || [];
   renderSessionList();
+  refreshStorageStats();
 }
 function renderSessionList() {
   const el = $('#sessionList');
   if (!state.sessions.length) {
-    el.innerHTML = '<div style="text-align:center;color:var(--fg-3);font-size:12px;padding:30px 0;">还没有会话</div>';
+    const searching = Boolean(($('#sessionSearch')?.value || '').trim());
+    el.innerHTML = `<div style="text-align:center;color:var(--fg-3);font-size:12px;padding:30px 0;">${searching ? '没有匹配的会话' : '还没有会话'}</div>`;
     return;
   }
   const currentId = state.currentSession?.id;
   el.innerHTML = state.sessions.map(s => {
     const active = s.id === currentId ? ' active' : '';
+    const archived = Boolean(s.archivedAt);
     const count = Number.isFinite(s.messageCount) ? s.messageCount : (s.messages?.length || 0);
     const cartCount = Number.isFinite(s.cartCount) ? s.cartCount : (Array.isArray(s.cart) ? s.cart.length : 0);
     const resultCount = Number.isFinite(s.resultCount) ? s.resultCount : (s.result?.playlist?.length || 0);
@@ -166,19 +228,31 @@ function renderSessionList() {
     const restoreBtn = hasResult
       ? `<button data-act="restore" data-id="${s.id}" class="primary">↺ 恢复</button>`
       : '';
+    const archiveBtn = archived
+      ? `<button data-act="unarchive" data-id="${s.id}">取消归档</button>`
+      : `<button data-act="archive" data-id="${s.id}">归档</button>`;
+    const deleteBtn = archived
+      ? `<button data-act="delete" data-id="${s.id}" class="danger">删除</button>`
+      : '';
+    const snippet = s.snippet
+      ? `<div class="meta session-snippet">${escapeHtml(s.snippet)}</div>`
+      : '';
     return `
-      <div class="session-item${active}" data-id="${s.id}">
+      <div class="session-item${active}${archived ? ' archived' : ''}" data-id="${s.id}" data-archived="${archived ? '1' : '0'}">
         <div class="row">
           <div class="name">${escapeHtml(s.name)}</div>
           ${active ? '<span class="badge">当前</span>' : ''}
+          ${archived ? '<span class="badge yellow">归档</span>' : ''}
         </div>
         <div class="meta">${count} 条 ${hasEq} ${cartHint} ${resultHint} · ${escapeHtml(fmtDate(s.lastActiveAt))}</div>
+        ${snippet}
         <div class="actions">
           ${restoreBtn}
           <button data-act="switch" data-id="${s.id}">切换</button>
           <button data-act="export" data-id="${s.id}">导出</button>
           <button data-act="rename" data-id="${s.id}">改名</button>
-          <button data-act="delete" data-id="${s.id}" class="danger">删除</button>
+          ${archiveBtn}
+          ${deleteBtn}
         </div>
       </div>
     `;
@@ -207,6 +281,26 @@ $('#sessionList').addEventListener('click', async e => {
     }
     btn.disabled = false;
     btn.textContent = '导出';
+    return;
+  }
+  if (act === 'archive' || act === 'unarchive') {
+    btn.disabled = true;
+    try {
+      const r = await sendMsg({
+        action: act === 'archive' ? 'archiveSession' : 'unarchiveSession',
+        id,
+      });
+      if (r?.ok) {
+        pushLog('ok', act === 'archive' ? '已归档会话' : '已取消归档');
+        await refreshSessions();
+        if (id === state.currentSession?.id) await loadCurrentSession();
+      } else {
+        pushLog('err', '归档操作失败：' + (r?.error || '未知'));
+      }
+    } catch (err) {
+      pushLog('err', '归档操作失败：' + (err?.message || err));
+    }
+    btn.disabled = false;
     return;
   }
   if (act === 'restore') {
@@ -263,7 +357,12 @@ $('#sessionList').addEventListener('click', async e => {
     return;
   }
   if (act === 'delete') {
-    if (!confirm('确定删除这个会话？')) return;
+    const entry = state.sessions.find(entryItem => entryItem.id === id);
+    if (!entry?.archivedAt) {
+      pushLog('err', '请先归档这个会话，再执行删除');
+      return;
+    }
+    if (!confirm('确定删除这个归档会话？删除后无法恢复，建议先导出。')) return;
     await sendMsg({ action: 'deleteSession', id });
     refreshSessions();
     const r = await sendMsg({ action: 'getCurrentSession' });

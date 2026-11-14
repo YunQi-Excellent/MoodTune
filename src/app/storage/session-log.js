@@ -21,12 +21,14 @@ import {
 
 const DB_NAME = 'moodtune-sessions';
 const DB_VERSION = 2;
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const DEFAULT_PAGE_SIZE = 30;
 const MAX_PAGE_SIZE = 100;
 const NAME_LIMIT = 40;
 const DEFAULT_SESSION_NAME = '新会话';
 const DEFAULT_RENAME_FALLBACK = '未命名';
+const SEARCH_TEXT_LIMIT = 32_000;
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$/;
 
 const META = 'meta';
 const SESSIONS = 'sessions';
@@ -37,7 +39,7 @@ const META_FIELDS = new Set([
   'id', 'name', 'createdAt', 'updatedAt', 'lastActiveAt',
   'lastSeq', 'messageCount', 'cartCount', 'songCount', 'resultCount',
   'hasResult', 'hasEq', 'archivedAt', 'pinnedAt',
-  'summary', 'summaryThroughSeq',
+  'summary', 'summaryThroughSeq', 'bytes', 'searchText',
 ]);
 
 function normalizeName(value, fallback = DEFAULT_SESSION_NAME) {
@@ -134,6 +136,8 @@ function emptyMeta(id, name, at) {
     pinnedAt: null,
     summary: null,
     summaryThroughSeq: null,
+    bytes: 0,
+    searchText: '',
   };
 }
 
@@ -145,6 +149,60 @@ function emptyState(sessionId, at) {
     result: null,
     updatedAt: at,
   };
+}
+
+function safeId(value, prefix, newId) {
+  const raw = String(value || '');
+  return SAFE_ID.test(raw) ? raw : newId(prefix);
+}
+
+function publicMeta(meta) {
+  const { searchText: _searchText, ...rest } = meta || {};
+  return rest;
+}
+
+/** 一条消息里值得检索的可见文本。 */
+export function searchTextOfMessage(message) {
+  if (!message) return '';
+  const parts = [
+    message.text,
+    message.reason,
+    message.name,
+    message.plan?.topic,
+    message.plan?.need,
+    message.thinking?.text,
+  ];
+  if (Array.isArray(message.picks)) {
+    for (const pick of message.picks) {
+      parts.push(pick?.name, pick?.artists, pick?.reason);
+    }
+  }
+  return parts.filter(part => typeof part === 'string' && part.trim()).join('\n');
+}
+
+function appendSearchText(current, addition) {
+  const text = `${current || ''}\n${addition || ''}`.trim();
+  return text.length > SEARCH_TEXT_LIMIT ? text.slice(-SEARCH_TEXT_LIMIT) : text;
+}
+
+function buildSearchText(messages) {
+  return (Array.isArray(messages) ? messages : []).reduce(
+    (text, message) => appendSearchText(text, searchTextOfMessage(message)),
+    '',
+  );
+}
+
+function estimateBytes(value) {
+  try { return JSON.stringify(value ?? null).length; } catch { return 0; }
+}
+
+function estimateMessagesBytes(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .reduce((sum, message) => sum + estimateBytes(message), 0);
+}
+
+function estimateSessionBytes(messages, state) {
+  return estimateMessagesBytes(messages) + estimateBytes(state);
 }
 
 function stripMessage(record) {
@@ -223,7 +281,7 @@ export function createSessionLogStore({
       let firstSessionId = null;
       for (const raw of list) {
         const at = Number(raw?.createdAt) || now();
-        const id = String(raw?.id || newId('sess'));
+        const id = safeId(raw?.id, 'sess', newId);
         const messages = Array.isArray(raw?.messages) ? raw.messages : [];
         const state = {
           sessionId: id,
@@ -248,6 +306,8 @@ export function createSessionLogStore({
           pinnedAt: raw?.pinnedAt ?? null,
           summary: raw?.summary ?? null,
           summaryThroughSeq: Number(raw?.summaryThroughSeq ?? raw?.summary?.throughSeq) || null,
+          bytes: estimateSessionBytes(messages, state),
+          searchText: buildSearchText(messages),
         };
 
         sessionStore.put(meta);
@@ -257,7 +317,7 @@ export function createSessionLogStore({
           const seq = index + 1;
           messageStore.put({
             ...(message && typeof message === 'object' ? message : {}),
-            id: message?.id || newId('msg'),
+            id: safeId(message?.id, 'msg', newId),
             sessionId: id,
             seq,
           });
@@ -283,9 +343,39 @@ export function createSessionLogStore({
     }
   };
 
+  const backfillSearchMetadata = async (db) => {
+    const tx = db.transaction([META, SESSIONS, MESSAGES], 'readwrite');
+    const done = transactionDone(tx);
+    const sessionStore = tx.objectStore(SESSIONS);
+    const metas = await requestToPromise(sessionStore.getAll());
+    const messages = await requestToPromise(tx.objectStore(MESSAGES).getAll());
+    const messagesById = new Map();
+    for (const message of messages) {
+      const list = messagesById.get(message.sessionId) || [];
+      list.push(message);
+      messagesById.set(message.sessionId, list);
+    }
+
+    for (const meta of metas) {
+      const list = messagesById.get(meta.id) || [];
+      sessionStore.put({
+        ...meta,
+        bytes: estimateMessagesBytes(list),
+        searchText: buildSearchText(list),
+      });
+    }
+    tx.objectStore(META).put(metaRecord('schemaVersion', SCHEMA_VERSION));
+    tx.objectStore(META).put(metaRecord('migratedAt', now()));
+    await done;
+  };
+
   const migrate = async (db) => {
     const version = Number(await getMetaValue(db, 'schemaVersion'));
     if (version >= SCHEMA_VERSION) return;
+    if (version >= 2) {
+      await backfillSearchMetadata(db);
+      return;
+    }
 
     const data = await area.get([SESSIONS_KEY, CURRENT_SESSION_KEY]);
     const legacy = Array.isArray(data?.[SESSIONS_KEY]) ? data[SESSIONS_KEY] : [];
@@ -345,7 +435,7 @@ export function createSessionLogStore({
     const messageCount = Number(meta?.messageCount) || 0;
     return {
       ...stateValues,
-      ...meta,
+      ...publicMeta(meta),
       cart: Array.isArray(state?.cart) ? state.cart : [],
       cartEq: state?.cartEq ?? null,
       result: state?.result ?? null,
@@ -447,7 +537,7 @@ export function createSessionLogStore({
             resolve();
             return;
           }
-          if (includeArchived || !cursor.value.archivedAt) result.push(cursor.value);
+          if (includeArchived || !cursor.value.archivedAt) result.push(publicMeta(cursor.value));
           cursor.continue();
         };
         request.onerror = () => reject(request.error || new Error('读取会话列表失败'));
@@ -620,6 +710,8 @@ export function createSessionLogStore({
           messageCount: (Number(meta.messageCount) || 0) + 1,
           lastActiveAt: at,
           updatedAt: at,
+          searchText: appendSearchText(meta.searchText, searchTextOfMessage(stored)),
+          bytes: (Number(meta.bytes) || 0) + estimateBytes(stored),
         };
         tx.objectStore(SESSIONS).put(nextMeta);
 
@@ -648,6 +740,10 @@ export function createSessionLogStore({
           updatedAt: now(),
           lastActiveAt: patch.lastActiveAt ?? now(),
         }, nextState);
+        nextMeta.bytes = Math.max(
+          0,
+          (Number(meta.bytes) || 0) - estimateBytes(state) + estimateBytes(nextState),
+        );
 
         tx.objectStore(STATES).put(nextState);
         tx.objectStore(SESSIONS).put(nextMeta);
@@ -679,12 +775,136 @@ export function createSessionLogStore({
           updatedAt: now(),
           lastActiveAt: now(),
         }, nextState);
+        nextMeta.bytes = Math.max(
+          0,
+          (Number(meta.bytes) || 0) - estimateBytes(state) + estimateBytes(nextState),
+        );
 
         tx.objectStore(STATES).put(nextState);
         tx.objectStore(SESSIONS).put(nextMeta);
         emit('update', sessionId);
         return output === undefined ? compose(nextMeta, nextState) : output;
       });
+    },
+
+    async archive(id) {
+      return runTx([META, SESSIONS], 'readwrite', async tx => {
+        const meta = await getMeta(tx, id);
+        if (!meta) throw new Error('找不到会话');
+        const next = { ...meta, archivedAt: now(), updatedAt: now() };
+        tx.objectStore(SESSIONS).put(next);
+
+        const current = await requestToPromise(tx.objectStore(META).get(CURRENT_SESSION_KEY));
+        if (current?.value === id) {
+          const all = await requestToPromise(tx.objectStore(SESSIONS).getAll());
+          const candidate = all
+            .filter(item => item.id !== id && !item.archivedAt)
+            .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+          if (candidate) {
+            tx.objectStore(META).put(metaRecord(CURRENT_SESSION_KEY, candidate.id));
+          }
+        }
+        emit('archive', id);
+        return publicMeta(next);
+      });
+    },
+
+    async unarchive(id) {
+      return runTx([SESSIONS], 'readwrite', async tx => {
+        const meta = await getMeta(tx, id);
+        if (!meta) throw new Error('找不到会话');
+        const next = { ...meta, archivedAt: null, updatedAt: now() };
+        tx.objectStore(SESSIONS).put(next);
+        emit('archive', id);
+        return publicMeta(next);
+      });
+    },
+
+    async search(query, { limit = 50 } = {}) {
+      const needle = String(query || '').trim().toLowerCase().slice(0, 80);
+      if (!needle) return [];
+      const terms = needle.split(/\s+/).filter(Boolean);
+
+      await ensureReady();
+      const db = await open();
+      const tx = db.transaction(SESSIONS, 'readonly');
+      const done = transactionDone(tx);
+      const metas = await requestToPromise(tx.objectStore(SESSIONS).getAll());
+      await done;
+
+      const results = [];
+      for (const meta of metas) {
+        const name = String(meta.name || '');
+        const text = String(meta.searchText || '');
+        const haystack = `${name}\n${text}`.toLowerCase();
+        if (!terms.every(term => haystack.includes(term))) continue;
+
+        const nameHit = terms.some(term => name.toLowerCase().includes(term));
+        const matchCount = terms.reduce(
+          (count, term) => count + (haystack.split(term).length - 1),
+          0,
+        );
+        const index = haystack.indexOf(terms[0]);
+        const start = Math.max(0, index - 28);
+        const end = Math.min(haystack.length, index + needle.length + 42);
+        const snippet = `${index > 0 ? '…' : ''}${`${name}\n${text}`.slice(start, end).replace(/\s+/g, ' ').trim()}${end < haystack.length ? '…' : ''}`;
+
+        results.push({
+          ...publicMeta(meta),
+          score: matchCount + (nameHit ? 10 : 0),
+          matchCount,
+          snippet,
+        });
+      }
+
+      return results
+        .sort((a, b) => b.score - a.score || (b.updatedAt || 0) - (a.updatedAt || 0))
+        .slice(0, limit);
+    },
+
+    async getStorageStats() {
+      await ensureReady();
+      const db = await open();
+      const tx = db.transaction(SESSIONS, 'readonly');
+      const done = transactionDone(tx);
+      const metas = await requestToPromise(tx.objectStore(SESSIONS).getAll());
+      await done;
+
+      const bytes = metas.reduce((sum, meta) => sum + (Number(meta.bytes) || 0), 0);
+      const messageCount = metas.reduce((sum, meta) => sum + (Number(meta.messageCount) || 0), 0);
+      const top = metas
+        .map(meta => ({ id: meta.id, name: meta.name, bytes: Number(meta.bytes) || 0 }))
+        .sort((a, b) => b.bytes - a.bytes)
+        .slice(0, 5);
+
+      let usage = null;
+      let quota = null;
+      try {
+        const estimate = await globalThis.navigator?.storage?.estimate?.();
+        if (estimate) {
+          usage = estimate.usage ?? null;
+          quota = estimate.quota ?? null;
+        }
+      } catch {}
+
+      let chromeBytes = null;
+      try {
+        const storage = globalThis.chrome?.storage?.local;
+        if (storage && typeof storage.getBytesInUse === 'function') {
+          chromeBytes = await storage.getBytesInUse(null);
+        }
+      } catch {}
+
+      return {
+        sessions: metas.length,
+        archived: metas.filter(meta => meta.archivedAt).length,
+        messages: messageCount,
+        bytes,
+        top,
+        usage,
+        quota,
+        chromeBytes,
+      };
     },
 
     /**
@@ -694,7 +914,7 @@ export function createSessionLogStore({
     async putSession(raw, { overwrite = false, setCurrent = true } = {}) {
       const at = Number(raw?.createdAt) || now();
       return runTx([META, SESSIONS, MESSAGES, STATES], 'readwrite', async tx => {
-        const requestedId = String(raw?.id || '');
+        const requestedId = SAFE_ID.test(String(raw?.id || '')) ? String(raw.id) : '';
         let id = requestedId;
         if (!id) {
           do { id = newId('sess'); } while (await getMeta(tx, id));
@@ -715,7 +935,7 @@ export function createSessionLogStore({
         const messages = Array.isArray(raw?.messages) ? raw.messages : [];
         const stored = messages.map((message, index) => ({
           ...(message && typeof message === 'object' ? message : {}),
-          id: message?.id || newId('msg'),
+          id: safeId(message?.id, 'msg', newId),
           sessionId: id,
           seq: index + 1,
         }));
@@ -743,6 +963,8 @@ export function createSessionLogStore({
           pinnedAt: raw?.pinnedAt ?? null,
           summary,
           summaryThroughSeq: Number(raw?.summaryThroughSeq ?? summary?.throughSeq) || null,
+          bytes: estimateSessionBytes(stored, state),
+          searchText: buildSearchText(messages),
         };
 
         tx.objectStore(SESSIONS).put(meta);

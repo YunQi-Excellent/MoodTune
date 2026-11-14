@@ -167,6 +167,13 @@ source → preamp → EQ(10 段 peaking) → 宽度 → 串音 → 早期反射 
 - 侧边栏支持单会话「导出」和文件「导入」；导入时 id 冲突默认新建会话，也可显式覆盖。
 - 文件夹同步优先读 `.jsonl`，兼容旧的 `<id>.json`；push 会写 `.jsonl` 并清理同 id 旧 `.json`。
 
+### 会话搜索、归档与存储用量
+
+- `messages` 追加时把可见文本（用户文本、计划主题、候选歌名/歌手、错误原因等）写入 `sessions.searchText`，上限 32k 字符；搜索直接扫描会话级物化文本，支持中文子串和多词交集，避免每次查询都遍历全部消息。
+- `sessions.bytes` 保存消息 + 状态的估算字节数；追加只做增量累加，状态更新只做差额修正。
+- 列表默认只返回未归档会话；`archive` 设置 `archivedAt`，若归档的是当前会话则自动切到下一个未归档会话。删除只允许针对已归档会话，避免误删。
+- 存储面板使用 `navigator.storage.estimate()` 展示 origin 用量/配额，并汇总会话数、归档数、消息数和估算字节数；`chrome.storage.local.getBytesInUse` 可用时一并展示。
+
 ### 消息协议
 
 - 请求两种形状：`{ action: 'listSessions' }` 或 `{ target: 'background', type: 'PLAYER_TOGGLE' }`

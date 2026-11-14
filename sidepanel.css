@@ -1567,3 +1567,79 @@ html.dark .empty-chat .hint code {
   opacity: 0.6;
   cursor: default;
 }
+
+/* 会话搜索与存储用量 */
+.session-search-wrap {
+  padding: 10px 14px 0;
+  flex-shrink: 0;
+}
+.session-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--soft-bg);
+  color: var(--fg-0);
+  font-size: 11px;
+  outline: none;
+}
+.session-search:focus {
+  border-color: var(--brand-400);
+  box-shadow: 0 0 0 3px var(--brand-50);
+}
+.session-storage {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.storage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--fg-2);
+}
+.storage-head span:last-child {
+  font-family: ui-monospace, monospace;
+  color: var(--fg-3);
+}
+.storage-bar {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--soft-bg);
+  overflow: hidden;
+}
+.storage-bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--brand-400), var(--brand-600));
+  transition: width 0.3s ease;
+}
+.storage-meta {
+  font-size: 10px;
+  color: var(--fg-3);
+  line-height: 1.5;
+}
+.storage-actions { display: flex; gap: 6px; }
+.storage-actions .btn {
+  flex: 1;
+  padding: 5px 10px;
+  font-size: 10px;
+  box-shadow: none;
+}
+
+.session-item.archived { opacity: 0.82; }
+.session-snippet {
+  margin-top: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--card-bg);
+  font-family: inherit;
+  line-height: 1.5;
+  word-break: break-word;
+}

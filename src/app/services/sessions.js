@@ -61,7 +61,7 @@ export function createSessionService({
 
   const service = {
     /* ---- 基本操作 ---- */
-    list: () => (store.listSummaries ? store.listSummaries() : store.list()),
+    list: options => (store.listSummaries ? store.listSummaries(options) : store.list()),
     current: () => store.getCurrent(),
     currentPage: options => (
       store.getCurrentPage ? store.getCurrentPage(options) : store.getCurrent()
@@ -81,6 +81,10 @@ export function createSessionService({
     importJsonl: (text, options) => (
       store.importJsonl ? store.importJsonl(text, options) : null
     ),
+    search: (query, options) => (store.search ? store.search(query, options) : []),
+    archive: id => (store.archive ? store.archive(id) : null),
+    unarchive: id => (store.unarchive ? store.unarchive(id) : null),
+    stats: () => (store.getStorageStats ? store.getStorageStats() : null),
 
     async loadEarlier(sessionId, beforeSeq, limit) {
       if (!store.getPage) return null;

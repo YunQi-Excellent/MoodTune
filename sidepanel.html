@@ -105,7 +105,22 @@
       </div>
     </div>
     <input type="file" id="importSessionFile" accept=".jsonl,application/jsonl,text/plain" hidden>
+    <div class="session-search-wrap">
+      <input type="search" id="sessionSearch" class="session-search" placeholder="搜索会话或消息…" autocomplete="off">
+    </div>
     <div class="drawer-body" id="sessionList"></div>
+    <div class="session-storage" id="sessionStorage">
+      <div class="storage-head">
+        <span>存储用量</span>
+        <span id="storageUsage">统计中…</span>
+      </div>
+      <div class="storage-bar"><div class="storage-bar-fill" id="storageBar"></div></div>
+      <div class="storage-meta" id="storageMeta"></div>
+      <div class="storage-actions">
+        <button class="btn ghost" id="toggleArchivedBtn">显示归档</button>
+        <button class="btn ghost" id="refreshStorageBtn">刷新</button>
+      </div>
+    </div>
     <div style="padding: 12px 14px; border-top: 1px solid var(--border);">
       <button class="btn" id="newSessionBtn" style="width: 100%;">＋ 新建会话</button>
     </div>
