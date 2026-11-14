@@ -50,6 +50,7 @@ const state = {
   },
   messageNodes: new Map(),
   thinkingRecords: [],
+  showArchived: false,
   running: false,
   // 用户手动中断后忽略迟到的思考/进度事件，避免按钮又被重新点亮
   stopped: false,
@@ -94,44 +95,169 @@ function closeSessionDrawer() {
   $('#backdrop').classList.remove('show');
 }
 $('#closeSessionDrawer').addEventListener('click', closeSessionDrawer);
+$('#importSessionBtn').addEventListener('click', () => $('#importSessionFile').click());
+$('#importSessionFile').addEventListener('change', async event => {
+  const input = event.target;
+  const file = input.files?.[0];
+  input.value = '';
+  await importSessionFile(file);
+});
+$('#sessionSearch').addEventListener('input', () => {
+  if (sessionSearchTimer) clearTimeout(sessionSearchTimer);
+  sessionSearchTimer = setTimeout(() => { refreshSessions(); }, 200);
+});
+$('#toggleArchivedBtn').addEventListener('click', () => {
+  state.showArchived = !state.showArchived;
+  $('#toggleArchivedBtn').textContent = state.showArchived ? '隐藏归档' : '显示归档';
+  refreshSessions();
+});
+$('#refreshStorageBtn').addEventListener('click', () => {
+  refreshSessions();
+  refreshStorageStats();
+});
 
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: 'application/jsonl;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function importSessionFile(file) {
+  if (!file) return;
+  if (file.size > 20 * 1024 * 1024) {
+    pushLog('err', '导入失败：文件超过 20MB');
+    return;
+  }
+  try {
+    const content = await file.text();
+    const r = await sendMsg({ action: 'importSessionJsonl', content });
+    if (!r?.ok) {
+      pushLog('err', '导入失败：' + (r?.error || '未知'));
+      return;
+    }
+    if (Array.isArray(r.warnings) && r.warnings.length > 0) {
+      pushLog('stage', `导入警告：${r.warnings.slice(0, 3).join('；')}`);
+    }
+    await refreshSessions();
+    await loadCurrentSession();
+    closeSessionDrawer();
+    pushLog('ok', `已导入会话「${r.session?.name || '未命名'}」`);
+  } catch (err) {
+    pushLog('err', '导入失败：' + (err?.message || err));
+  }
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+async function refreshStorageStats() {
+  const usageEl = $('#storageUsage');
+  const metaEl = $('#storageMeta');
+  const barEl = $('#storageBar');
+  if (!usageEl || !metaEl || !barEl) return;
+
+  const r = await sendMsg({ action: 'getStorageStats' });
+  if (!r?.ok || !r.stats) {
+    usageEl.textContent = '统计失败';
+    return;
+  }
+
+  const stats = r.stats;
+  const used = Number(stats.usage) || Number(stats.bytes) || 0;
+  const quota = Number(stats.quota) || 0;
+  usageEl.textContent = quota > 0
+    ? `${formatBytes(used)} / ${formatBytes(quota)}`
+    : formatBytes(used);
+
+  const percent = quota > 0 ? Math.min(100, (used / quota) * 100) : 0;
+  barEl.style.width = `${percent}%`;
+
+  const chromePart = Number.isFinite(stats.chromeBytes)
+    ? ` · chrome.storage ${formatBytes(stats.chromeBytes)}`
+    : '';
+  const top = Array.isArray(stats.top) ? stats.top[0] : null;
+  const topPart = top
+    ? ` · 最大「${String(top.name || '').slice(0, 12)}」${formatBytes(top.bytes)}`
+    : '';
+  metaEl.textContent = `${stats.sessions || 0} 个会话（${stats.archived || 0} 归档）`
+    + ` · ${stats.messages || 0} 条消息 · 会话估算 ${formatBytes(stats.bytes)}${chromePart}${topPart}`;
+}
+
+let sessionSearchTimer = null;
 async function refreshSessions() {
-  const r = await sendMsg({ action: 'listSessions' });
+  const query = ($('#sessionSearch')?.value || '').trim();
+  const r = query
+    ? await sendMsg({ action: 'searchSessions', query, limit: 50 })
+    : await sendMsg({ action: 'listSessions', includeArchived: state.showArchived });
   if (!r?.ok) return;
-  state.sessions = r.sessions;
+  state.sessions = r.sessions || [];
   renderSessionList();
+  refreshStorageStats();
 }
 function renderSessionList() {
   const el = $('#sessionList');
   if (!state.sessions.length) {
-    el.innerHTML = '<div style="text-align:center;color:var(--fg-3);font-size:12px;padding:30px 0;">还没有会话</div>';
+    const searching = Boolean(($('#sessionSearch')?.value || '').trim());
+    el.innerHTML = `<div style="text-align:center;color:var(--fg-3);font-size:12px;padding:30px 0;">${searching ? '没有匹配的会话' : '还没有会话'}</div>`;
     return;
   }
   const currentId = state.currentSession?.id;
   el.innerHTML = state.sessions.map(s => {
     const active = s.id === currentId ? ' active' : '';
-    const count = s.messages?.length || 0;
-    const cartCount = Array.isArray(s.cart) ? s.cart.length : 0;
-    const resultCount = s.result?.playlist?.length || 0;
-    const hasResult = !!(s.result || (s.eq || s.playlistSnapshot));
-    const hasEq = (s.result?.eq || s.cartEq) ? '🎛' : '';
+    const archived = Boolean(s.archivedAt);
+    const count = Number.isFinite(s.messageCount) ? s.messageCount : (s.messages?.length || 0);
+    const cartCount = Number.isFinite(s.cartCount) ? s.cartCount : (Array.isArray(s.cart) ? s.cart.length : 0);
+    const resultCount = Number.isFinite(s.resultCount) ? s.resultCount : (s.result?.playlist?.length || 0);
+    const hasResult = typeof s.hasResult === 'boolean'
+      ? s.hasResult
+      : !!(s.result || (s.eq || s.playlistSnapshot));
+    const hasEq = (s.hasEq ?? Boolean(s.result?.eq || s.cartEq)) ? '🎛' : '';
     const cartHint = cartCount > 0 ? `· 🎵${cartCount}` : '';
     const resultHint = resultCount > 0 ? `· 结算${resultCount}` : '';
+    const summaryHint = s.summaryThroughSeq ? `· 摘要至 ${s.summaryThroughSeq}` : '';
+    const compactBtn = count >= 30
+      ? `<button data-act="compact" data-id="${s.id}">压缩</button>`
+      : '';
     const restoreBtn = hasResult
       ? `<button data-act="restore" data-id="${s.id}" class="primary">↺ 恢复</button>`
       : '';
+    const archiveBtn = archived
+      ? `<button data-act="unarchive" data-id="${s.id}">取消归档</button>`
+      : `<button data-act="archive" data-id="${s.id}">归档</button>`;
+    const deleteBtn = archived
+      ? `<button data-act="delete" data-id="${s.id}" class="danger">删除</button>`
+      : '';
+    const snippet = s.snippet
+      ? `<div class="meta session-snippet">${escapeHtml(s.snippet)}</div>`
+      : '';
     return `
-      <div class="session-item${active}" data-id="${s.id}">
+      <div class="session-item${active}${archived ? ' archived' : ''}" data-id="${s.id}" data-archived="${archived ? '1' : '0'}">
         <div class="row">
           <div class="name">${escapeHtml(s.name)}</div>
           ${active ? '<span class="badge">当前</span>' : ''}
+          ${archived ? '<span class="badge yellow">归档</span>' : ''}
         </div>
-        <div class="meta">${count} 条 ${hasEq} ${cartHint} ${resultHint} · ${escapeHtml(fmtDate(s.lastActiveAt))}</div>
+        <div class="meta">${count} 条 ${hasEq} ${cartHint} ${resultHint} ${summaryHint} · ${escapeHtml(fmtDate(s.lastActiveAt))}</div>
+        ${snippet}
         <div class="actions">
           ${restoreBtn}
           <button data-act="switch" data-id="${s.id}">切换</button>
+          <button data-act="export" data-id="${s.id}">导出</button>
+          ${compactBtn}
           <button data-act="rename" data-id="${s.id}">改名</button>
-          <button data-act="delete" data-id="${s.id}" class="danger">删除</button>
+          ${archiveBtn}
+          ${deleteBtn}
         </div>
       </div>
     `;
@@ -144,6 +270,68 @@ $('#sessionList').addEventListener('click', async e => {
   const btn = e.target.closest('button');
   const act = btn?.getAttribute('data-act');
 
+  if (act === 'export') {
+    btn.disabled = true;
+    btn.textContent = '导出中…';
+    try {
+      const r = await sendMsg({ action: 'exportSessionJsonl', id });
+      if (r?.ok) {
+        downloadText(r.filename, r.content);
+        pushLog('ok', `已导出「${r.filename}」`);
+      } else {
+        pushLog('err', '导出失败：' + (r?.error || '未知'));
+      }
+    } catch (err) {
+      pushLog('err', '导出失败：' + (err?.message || err));
+    }
+    btn.disabled = false;
+    btn.textContent = '导出';
+    return;
+  }
+  if (act === 'compact') {
+    btn.disabled = true;
+    btn.textContent = '压缩中…';
+    try {
+      const r = await sendMsg({ action: 'compactSession', sessionId: id });
+      if (r?.ok && r.compacted) {
+        if (state.currentSession?.id === id) {
+          state.currentSession.summary = r.summary;
+          state.currentSession.summaryThroughSeq = r.summary?.throughSeq;
+        }
+        pushLog('ok', `已压缩到第 ${r.summary?.throughSeq || '?'} 条`);
+        await refreshSessions();
+      } else if (r?.ok) {
+        pushLog('stage', '消息还不够多，暂时不需要压缩');
+      } else {
+        pushLog('err', '压缩失败：' + (r?.error || '未知'));
+      }
+    } catch (err) {
+      pushLog('err', '压缩失败：' + (err?.message || err));
+    }
+    btn.disabled = false;
+    btn.textContent = '压缩';
+    return;
+  }
+  if (act === 'archive' || act === 'unarchive') {
+    btn.disabled = true;
+    try {
+      const r = await sendMsg({
+        action: act === 'archive' ? 'archiveSession' : 'unarchiveSession',
+        id,
+      });
+      if (r?.ok) {
+        pushLog('ok', act === 'archive' ? '已归档会话' : '已取消归档');
+        await refreshSessions();
+        if (id === state.currentSession?.id) await loadCurrentSession();
+      } else {
+        pushLog('err', '归档操作失败：' + (r?.error || '未知'));
+      }
+    } catch (err) {
+      pushLog('err', '归档操作失败：' + (err?.message || err));
+    }
+    btn.disabled = false;
+    return;
+  }
   if (act === 'restore') {
     btn.disabled = true; btn.textContent = '恢复中…';
     try {
@@ -191,14 +379,19 @@ $('#sessionList').addEventListener('click', async e => {
       await sendMsg({ action: 'renameSession', id, name: name.trim() });
       refreshSessions();
       if (id === state.currentSession?.id) {
-        const r = await sendMsg({ action: 'getCurrentSession' });
-        if (r?.ok) { state.currentSession = r.session; updateHeaderSessionName(); }
+        state.currentSession.name = name.trim();
+        updateHeaderSessionName();
       }
     }
     return;
   }
   if (act === 'delete') {
-    if (!confirm('确定删除这个会话？')) return;
+    const entry = state.sessions.find(entryItem => entryItem.id === id);
+    if (!entry?.archivedAt) {
+      pushLog('err', '请先归档这个会话，再执行删除');
+      return;
+    }
+    if (!confirm('确定删除这个归档会话？删除后无法恢复，建议先导出。')) return;
     await sendMsg({ action: 'deleteSession', id });
     refreshSessions();
     const r = await sendMsg({ action: 'getCurrentSession' });
@@ -241,6 +434,24 @@ function closeCartDrawer() {
   $('#backdrop').classList.remove('show');
 }
 $('#closeCartDrawer').addEventListener('click', closeCartDrawer);
+
+async function refreshCurrentSessionState() {
+  if (!state.currentSession) return;
+  const sessionId = state.currentSession.id;
+  const response = await sendMsg({ action: 'getSessionState', sessionId });
+  if (!response?.ok || !response.session || state.currentSession?.id !== sessionId) return;
+  Object.assign(state.currentSession, {
+    cart: response.session.cart,
+    cartEq: response.session.cartEq,
+    result: response.session.result,
+    songCount: response.session.songCount,
+    cartCount: response.session.cartCount,
+    resultCount: response.session.resultCount,
+    hasResult: response.session.hasResult,
+  });
+  updateCartUI();
+  refreshPlanCards();
+}
 
 function updateCartUI() {
   const cart = state.currentSession?.cart || [];
@@ -397,11 +608,7 @@ $('#cartSettleBtn').addEventListener('click', async () => {
     const r = await sendMsg({ action: 'cartSettle', sessionId: state.currentSession.id });
     if (r?.ok) {
       pushLog('ok', `已替换播放队列并开始播放 ${r.count} 首`);
-      const fresh = await sendMsg({ action: 'getCurrentSession' });
-      if (fresh?.ok) {
-        state.currentSession = fresh.session;
-        updateCartUI();
-      }
+      await refreshCurrentSessionState();
       closeCartDrawer();
       player.refresh();
     } else {
@@ -694,10 +901,7 @@ async function addLocalTrackToCart(track) {
     songs: [track],
   });
   if (r?.ok) {
-    const fresh = await sendMsg({ action: 'getCurrentSession' });
-    if (fresh?.ok) state.currentSession = fresh.session;
-    updateCartUI();
-    refreshPlanCards();
+    await refreshCurrentSessionState();
     pushLog('ok', `已加入会话歌单：${track.name || ''}`);
   } else {
     pushLog('err', '加入会话歌单失败：' + (r?.error || '未知'));
@@ -956,12 +1160,7 @@ $('#libraryBody').addEventListener('click', async e => {
     });
     if (r?.ok) {
       pushLog('ok', `已加入 ${r.added} 首到会话歌单`);
-      const fresh = await sendMsg({ action: 'getCurrentSession' });
-      if (fresh?.ok) {
-        state.currentSession = fresh.session;
-        updateCartUI();
-        refreshPlanCards();
-      }
+      await refreshCurrentSessionState();
     } else {
       pushLog('err', '加入失败：' + (r?.error || '未知'));
     }
@@ -1090,7 +1289,7 @@ $('#dock-drawer').addEventListener('click', async e => {
 });
 
 /* ================= 主渲染 (严密的 Git 树状态流) ================= */
-function renderCurrentSession() {
+function renderCurrentSession({ scroll = true } = {}) {
   const stream = $('#chatStream');
   stream.innerHTML = '';
   state.messageNodes.clear();
@@ -1114,9 +1313,69 @@ function renderCurrentSession() {
       </div>`;
     return;
   }
+  if (state.currentSession.hasMoreMessages) {
+    const remaining = Math.max(0, (state.currentSession.messageCount || 0) - messages.length);
+    const button = document.createElement('button');
+    button.id = 'loadEarlierMessages';
+    button.className = 'load-earlier';
+    button.textContent = remaining > 0
+      ? `加载更早的消息（还有 ${remaining} 条）`
+      : '加载更早的消息';
+    stream.appendChild(button);
+  }
+
   for (const m of messages) appendMessageNode(m);
-  scrollToBottom();
+  if (scroll) scrollToBottom();
 }
+
+let loadingEarlier = false;
+async function loadEarlierMessages() {
+  const session = state.currentSession;
+  if (!session?.hasMoreMessages || loadingEarlier || state.running) return;
+  loadingEarlier = true;
+
+  const button = $('#loadEarlierMessages');
+  if (button) {
+    button.disabled = true;
+    button.textContent = '加载中…';
+  }
+
+  const response = await sendMsg({
+    action: 'loadEarlierMessages',
+    sessionId: session.id,
+    beforeSeq: session.oldestSeq,
+  });
+  loadingEarlier = false;
+
+  if (!response?.ok) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '加载失败，点击重试';
+    }
+    return;
+  }
+
+  if (state.currentSession !== session) return;
+
+  const stream = $('#chatStream');
+  const previousHeight = stream.scrollHeight;
+  const previousTop = stream.scrollTop;
+
+  session.messages = [...(response.messages || []), ...(session.messages || [])];
+  session.oldestSeq = response.oldestSeq;
+  session.hasMoreMessages = Boolean(response.hasMore);
+  session.messageCount = response.messageCount ?? session.messageCount;
+
+  renderCurrentSession({ scroll: false });
+  requestAnimationFrame(() => {
+    stream.scrollTop = stream.scrollHeight - previousHeight + previousTop;
+  });
+}
+
+$('#chatStream').addEventListener('click', event => {
+  if (event.target.closest('#loadEarlierMessages')) loadEarlierMessages();
+});
+
 function removeEmptyChat() {
   const empty = $('#emptyChat');
   if (empty) empty.remove();
@@ -1346,12 +1605,7 @@ $('#chatStream').addEventListener('click', async e => {
       });
       if (!r?.ok) throw new Error(r?.error || '加入失败');
       pushLog('ok', `加入会话歌单 ${r.added} 首（共 ${r.total} 首）`);
-      const fresh = await sendMsg({ action: 'getCurrentSession' });
-      if (fresh?.ok) {
-        state.currentSession = fresh.session;
-        updateCartUI();
-        refreshPlanCards();
-      }
+      await refreshCurrentSessionState();
     } catch (err) {
       pushLog('err', '加入失败：' + (err?.message || err));
     } finally {
@@ -1503,6 +1757,7 @@ async function sendChat() {
   const userMsg = { id: userMessageId, role: 'user', kind: 'text', text, at: Date.now() };
   state.currentSession.messages = state.currentSession.messages || [];
   state.currentSession.messages.push(userMsg);
+  state.currentSession.messageCount = (state.currentSession.messageCount || 0) + 1;
   appendMessageNode(userMsg, { animate: true });
 
   pushLog('stage', '发送：' + text);
@@ -1632,6 +1887,39 @@ function finishThinking(options) {
 /* ================= 监听与同步 ================= */
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg?.target) return;
+  if (msg.target === 'sidepanel' && msg.type === 'SESSION_CHANGED') {
+    const payload = msg.payload || {};
+    if (payload.type === 'replace') {
+      refreshSessions();
+      loadCurrentSession();
+      return;
+    }
+    if (payload.sessionId && payload.sessionId !== state.currentSession?.id) return;
+
+    if (payload.type === 'append' && payload.message?.id) {
+      const messages = state.currentSession?.messages || [];
+      if (state.currentSession && !messages.some(item => item.id === payload.message.id)) {
+        messages.push(payload.message);
+        state.currentSession.messages = messages;
+        state.currentSession.messageCount = (state.currentSession.messageCount || 0) + 1;
+        appendMessageNode(payload.message, { animate: true });
+        scrollToBottom();
+      }
+    }
+    if (payload.type === 'update') updateCartUI();
+    if ($('#session-drawer').classList.contains('open')) refreshSessions();
+    return;
+  }
+  if (msg.target === 'sidepanel' && msg.type === 'SESSION_COMPACTED') {
+    const payload = msg.payload || {};
+    if (payload.sessionId && payload.sessionId === state.currentSession?.id && payload.summary) {
+      state.currentSession.summary = payload.summary;
+      state.currentSession.summaryThroughSeq = payload.summary.throughSeq;
+      pushLog('ok', `会话已压缩到第 ${payload.summary.throughSeq} 条`);
+    }
+    if ($('#session-drawer').classList.contains('open')) refreshSessions();
+    return;
+  }
   if (msg.target === 'sidepanel' && msg.type === 'PLAYER_STATE_CHANGED') {
     player.applyState(msg.payload);
     return;

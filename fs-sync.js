@@ -1,6 +1,6 @@
 // =====================================================
 // 文件系统同步器 v2
-// 职责：把 chrome.storage.local 的数据和用户文件夹里的 JSON 双向同步
+// 职责：把插件数据与用户文件夹里的 JSON / JSONL 双向同步
 // 安全原则：
 //   1. storage 为空时不覆盖文件夹
 //   2. 只有在确实有会话数据时才清理旧会话文件
@@ -10,9 +10,10 @@
 import {
   loadHandle, clearHandle,
   queryPermissionOnly, ensureSubdir,
-  readJson, writeJson, removeFile,
+  readJson, readText, writeJson, writeText, removeFile,
 } from './fs-manager.js';
 import { storageQueue } from './src/app/storage/storage-queue.js';
+import { parseSessionJsonl, serializeSessionJsonl } from './src/app/storage/session-jsonl.js';
 
 const FILE_VERSION = 1;
 
@@ -36,6 +37,15 @@ let syncTimer = null;
 let lastSyncAt = 0;
 let syncInProgress = false;
 let suppressNextChange = false;
+let sessionBridge = null;
+
+/**
+ * 由 background 注册的会话仓储桥接。
+ * 会话正文不再经过 chrome.storage.local，导入导出统一走这里。
+ */
+export function setSessionBridge(bridge) {
+  sessionBridge = bridge;
+}
 
 /* ============ 状态 ============ */
 export async function getFsStatus() {
@@ -62,13 +72,25 @@ async function readFolderMeta(handle) {
 }
 
 /* ============ 内部：读取 storage 概览 ============ */
+async function readAllSessions() {
+  if (sessionBridge) return sessionBridge.listAll();
+  const data = await chrome.storage.local.get(KEYS.sessions);
+  return Array.isArray(data[KEYS.sessions]) ? data[KEYS.sessions] : [];
+}
+
+async function readCurrentSessionId() {
+  if (sessionBridge) return sessionBridge.currentId();
+  const data = await chrome.storage.local.get(KEYS.currentSessionId);
+  return data[KEYS.currentSessionId] || null;
+}
+
 async function readStorageSummary() {
   const data = await chrome.storage.local.get([
-    KEYS.playlists, KEYS.eqPresets, KEYS.sessions,
+    KEYS.playlists, KEYS.eqPresets,
   ]);
   const playlists = Array.isArray(data[KEYS.playlists]) ? data[KEYS.playlists] : [];
   const eqPresets = Array.isArray(data[KEYS.eqPresets]) ? data[KEYS.eqPresets] : [];
-  const sessions = Array.isArray(data[KEYS.sessions]) ? data[KEYS.sessions] : [];
+  const sessions = await readAllSessions();
   const isEmpty = playlists.length === 0 && eqPresets.length === 0 && sessions.length === 0;
   return {
     playlists, eqPresets, sessions, isEmpty,
@@ -110,6 +132,7 @@ export async function pullFromFolder() {
   if (!handle) return { ok: false, reason: 'no-handle' };
 
   const errors = [];
+  let pulledSessions = 0;
   try {
     suppressNextChange = true;
 
@@ -135,15 +158,37 @@ export async function pullFromFolder() {
     if (Array.isArray(indexData?.sessions)) {
       const sessions = [];
       for (const metaItem of indexData.sessions) {
-        const sessData = await readJson(sessionsDir, `${metaItem.id}.json`);
-        if (sessData?.session) {
-          sessions.push(sessData.session);
-        } else {
-          errors.push(`会话文件 ${metaItem.id}.json 缺失或损坏`);
+        let session = null;
+        const text = await readText(sessionsDir, `${metaItem.id}.jsonl`);
+        if (text) {
+          try {
+            const parsed = parseSessionJsonl(text);
+            session = parsed.session;
+            for (const warning of parsed.warnings) {
+              errors.push(`会话 ${metaItem.id}.jsonl：${warning}`);
+            }
+          } catch (e) {
+            errors.push(`会话 ${metaItem.id}.jsonl 解析失败：${e?.message || e}`);
+          }
         }
+
+        if (!session) {
+          const sessData = await readJson(sessionsDir, `${metaItem.id}.json`);
+          if (sessData?.session) session = sessData.session;
+        }
+
+        if (session) sessions.push(session);
+        else errors.push(`会话文件 ${metaItem.id}.jsonl / .json 缺失或损坏`);
       }
-      if (sessions.length > 0) updates[KEYS.sessions] = sessions;
-      if (indexData.currentSessionId) updates[KEYS.currentSessionId] = indexData.currentSessionId;
+      if (sessions.length > 0) {
+        if (sessionBridge) {
+          await sessionBridge.replaceAll(sessions, indexData.currentSessionId || null);
+        } else {
+          updates[KEYS.sessions] = sessions;
+          if (indexData.currentSessionId) updates[KEYS.currentSessionId] = indexData.currentSessionId;
+        }
+        pulledSessions = sessions.length;
+      }
     } else if (indexData !== null) {
       errors.push('sessions/index.json 结构异常');
     }
@@ -161,11 +206,13 @@ export async function pullFromFolder() {
     lastSyncAt = Date.now();
     return {
       ok: true,
-      pulledKeys: appliedKeys,
+      pulledKeys: sessionBridge && pulledSessions > 0
+        ? [...appliedKeys, KEYS.sessions]
+        : appliedKeys,
       counts: {
         playlists: updates[KEYS.playlists]?.length || 0,
         eqPresets: updates[KEYS.eqPresets]?.length || 0,
-        sessions: updates[KEYS.sessions]?.length || 0,
+        sessions: sessionBridge ? pulledSessions : (updates[KEYS.sessions]?.length || 0),
       },
       warnings: errors,
     };
@@ -199,8 +246,7 @@ export async function pushToFolder(opts = {}) {
   syncInProgress = true;
   try {
     const { playlists, eqPresets, sessions } = summary;
-    const idR = await chrome.storage.local.get(KEYS.currentSessionId);
-    const currentSessionId = idR[KEYS.currentSessionId] || null;
+    const currentSessionId = await readCurrentSessionId();
 
     // 1) playlists.json
     await writeJson(handle, 'playlists.json', {
@@ -226,8 +272,8 @@ export async function pushToFolder(opts = {}) {
         for await (const entry of sessionsDir.values()) {
           if (entry.kind !== 'file') continue;
           if (entry.name === 'index.json') continue;
-          if (!entry.name.endsWith('.json')) continue;
-          const sid = entry.name.slice(0, -5);
+          if (!entry.name.endsWith('.json') && !entry.name.endsWith('.jsonl')) continue;
+          const sid = entry.name.replace(/\.(json|jsonl)$/, '');
           if (!currentIds.has(sid)) {
             await removeFile(sessionsDir, entry.name);
           }
@@ -249,18 +295,16 @@ export async function pushToFolder(opts = {}) {
     }));
     await writeJson(sessionsDir, 'index.json', {
       version: FILE_VERSION,
+      format: 'jsonl',
       updatedAt: Date.now(),
       currentSessionId,
       sessions: metas,
     });
 
-    // 每个会话单独一个文件
+    // 每个会话单独一个 JSONL；同时清理旧版 .json，避免同一会话两份数据。
     for (const s of sessions) {
-      await writeJson(sessionsDir, `${s.id}.json`, {
-        version: FILE_VERSION,
-        updatedAt: Date.now(),
-        session: s,
-      });
+      await writeText(sessionsDir, `${s.id}.jsonl`, serializeSessionJsonl(s));
+      await removeFile(sessionsDir, `${s.id}.json`);
     }
 
     // 4) .meta.json

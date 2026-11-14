@@ -1,7 +1,6 @@
 import {
   DEFAULT_PROVIDER_ID,
   EQ_CONFIG,
-  SESSION_CONFIG,
 } from './src/core/constants.js';
 import { normalizeEffects } from './src/core/effects.js';
 import { normalizeEq } from './src/core/eq.js';
@@ -29,7 +28,7 @@ import { createPlayerPreferences } from './src/app/services/preferences.js';
 import { createSessionService } from './src/app/services/sessions.js';
 import { createAssetStore } from './src/app/storage/assets.js';
 import { EQ_PRESETS_KEY, SAVED_PLAYLISTS_KEY } from './src/app/storage/keys.js';
-import { createSessionStore } from './src/app/storage/sessions.js';
+import { createSessionLogStore } from './src/app/storage/session-log.js';
 
 import { createChatAgent } from './src/agent/chat.js';
 import { createLLMClient } from './src/agent/llm.js';
@@ -44,6 +43,7 @@ import {
   scheduleSyncToFolder,
   initFs,
   onHandleSaved,
+  setSessionBridge,
 } from './fs-sync.js';
 
 let offscreenCreating = null;
@@ -70,12 +70,22 @@ musicProviders.register(createLocalProvider({
 
 /* =====================================================
    仓储
-   所有 storage 写入都经过 storageQueue，避免并发读改写互相覆盖
+   会话正文走 IndexedDB 事务；其余 chrome.storage 写入继续走 storageQueue，
+   避免同一 key 的并发读改写互相覆盖。
    ===================================================== */
-const sessionsStore = createSessionStore({
+const sessionsStore = createSessionLogStore({
   area: chrome.storage.local,
-  maxSessions: SESSION_CONFIG.maxSessions,
-  maxMessages: SESSION_CONFIG.maxMessagesPerSession,
+  onChange: event => {
+    forwardToSidepanel('SESSION_CHANGED', event);
+    scheduleSyncToFolder();
+  },
+});
+
+// fs-sync 不再直接读写 chatSessions：导入导出统一走日志仓储。
+setSessionBridge({
+  listAll: () => sessionsStore.exportAll(),
+  replaceAll: (list, currentId) => sessionsStore.replaceAll(list, currentId),
+  currentId: () => sessionsStore.currentId(),
 });
 
 const playlistsStore = createAssetStore({

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MoodTune — 对话式 AI 音乐助手</title>
-<meta name="description" content="把 AI 对话和音乐播放缝在一起。说出场景，剩下的交给它。">
+<meta name="description" content="AI 对话、音效链、本地曲库与分层会话记忆。说出场景，剩下的交给它。">
 
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/lucide@latest"></script>
@@ -118,6 +118,7 @@ tailwind.config = {
     </div>
     <div class="hidden md:flex items-center gap-8 text-sm text-zinc-400">
       <a href="#features" class="hover:text-white transition-colors">功能</a>
+      <a href="#memory" class="hover:text-white transition-colors">记忆系统</a>
       <a href="#workflow" class="hover:text-white transition-colors">工作流</a>
       <a href="#install" class="hover:text-white transition-colors">安装</a>
       <a href="#architecture" class="hover:text-white transition-colors">架构</a>
@@ -162,6 +163,21 @@ tailwind.config = {
           <i data-lucide="github" class="w-4 h-4"></i>
           查看源码
         </a>
+      </div>
+
+      <div class="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-zinc-500">
+        <span class="flex items-center gap-1.5">
+          <i data-lucide="audio-lines" class="w-3.5 h-3.5 text-brand-400"></i>
+          11 套内置音效
+        </span>
+        <span class="flex items-center gap-1.5">
+          <i data-lucide="folder-open" class="w-3.5 h-3.5 text-brand-400"></i>
+          本地曲库
+        </span>
+        <span class="flex items-center gap-1.5">
+          <i data-lucide="layers" class="w-3.5 h-3.5 text-brand-400"></i>
+          分层会话记忆
+        </span>
       </div>
     </div>
 
@@ -231,10 +247,10 @@ tailwind.config = {
   <section id="features" class="relative z-10 max-w-7xl mx-auto px-6 py-24">
     <div class="text-center mb-16">
       <p class="text-sm text-brand-400 font-mono mb-3">// FEATURES</p>
-      <h2 class="text-3xl md:text-5xl font-bold tracking-tight">六个你会在意的能力</h2>
+      <h2 class="text-3xl md:text-5xl font-bold tracking-tight">八个你会在意的能力</h2>
     </div>
 
-    <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
+    <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-5">
       <!-- 卡片 1 -->
       <div class="glass rounded-2xl p-6 hover:bg-white/[0.04] transition-all group">
         <div class="w-10 h-10 rounded-xl bg-brand-500/15 border border-brand-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
@@ -259,6 +275,28 @@ tailwind.config = {
 
       <!-- 卡片 3 -->
       <div class="glass rounded-2xl p-6 hover:bg-white/[0.04] transition-all group">
+        <div class="w-10 h-10 rounded-xl bg-fuchsia-500/15 border border-fuchsia-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+          <i data-lucide="audio-lines" class="w-5 h-5 text-fuchsia-400"></i>
+        </div>
+        <h3 class="font-bold text-lg mb-2">一键音效</h3>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          11 套内置音效，一次换整套听感。EQ 管音色，宽度、串音、反射、混响管空间感；套用后还能继续微调。
+        </p>
+      </div>
+
+      <!-- 卡片 4 -->
+      <div class="glass rounded-2xl p-6 hover:bg-white/[0.04] transition-all group">
+        <div class="w-10 h-10 rounded-xl bg-teal-500/15 border border-teal-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+          <i data-lucide="folder-open" class="w-5 h-5 text-teal-400"></i>
+        </div>
+        <h3 class="font-bold text-lg mb-2">本地曲目</h3>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          绑定本机音乐文件夹，递归扫描 mp3 / flac / m4a 等格式，读标签后直接加入歌单播放。文件不复制、不上传。
+        </p>
+      </div>
+
+      <!-- 卡片 5 -->
+      <div class="glass rounded-2xl p-6 hover:bg-white/[0.04] transition-all group">
         <div class="w-10 h-10 rounded-xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
           <i data-lucide="layers" class="w-5 h-5 text-sky-400"></i>
         </div>
@@ -268,37 +306,221 @@ tailwind.config = {
         </p>
       </div>
 
-      <!-- 卡片 4 -->
+      <!-- 卡片 6 -->
       <div class="glass rounded-2xl p-6 hover:bg-white/[0.04] transition-all group">
         <div class="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
           <i data-lucide="hard-drive" class="w-5 h-5 text-rose-400"></i>
         </div>
         <h3 class="font-bold text-lg mb-2">数据本地化</h3>
         <p class="text-sm text-zinc-400 leading-relaxed">
-          用 File System Access API 同步成 JSON 文件。插件更新、卸载重装，数据不丢。
+          用 File System Access API 把会话同步成 JSONL 日志，也能单会话导入导出。插件更新、卸载重装，数据不丢。
         </p>
       </div>
 
-      <!-- 卡片 5 -->
+      <!-- 卡片 7 -->
       <div class="glass rounded-2xl p-6 hover:bg-white/[0.04] transition-all group">
         <div class="w-10 h-10 rounded-xl bg-violet-500/15 border border-violet-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
           <i data-lucide="headphones" class="w-5 h-5 text-violet-400"></i>
         </div>
         <h3 class="font-bold text-lg mb-2">内置播放器</h3>
         <p class="text-sm text-zinc-400 leading-relaxed">
-          音频在 offscreen 里播放，侧边栏关了音乐继续。不切回网页版就能听。
+          音频在 offscreen 里播放，侧边栏关了音乐继续。本地文件和在线歌曲走同一条播放链。
         </p>
       </div>
 
-      <!-- 卡片 6 -->
+      <!-- 卡片 8 -->
       <div class="glass rounded-2xl p-6 hover:bg-white/[0.04] transition-all group">
         <div class="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
           <i data-lucide="plug-zap" class="w-5 h-5 text-emerald-400"></i>
         </div>
-        <h3 class="font-bold text-lg mb-2">OpenAI 兼容</h3>
+        <h3 class="font-bold text-lg mb-2">支持自定义 API</h3>
         <p class="text-sm text-zinc-400 leading-relaxed">
-          不绑定任何一家。DeepSeek / Moonshot / OpenAI / Ollama 都能接。
+          不绑定任何一家。DeepSeek / Moonshot / OpenAI / Ollama 都能接。想用什么模型由你决定！
         </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 记忆系统 ============ -->
+  <section id="memory" class="relative z-10 max-w-5xl mx-auto px-6 py-24">
+    <div class="text-center mb-12">
+      <p class="text-sm text-brand-400 font-mono mb-3">// MEMORY SYSTEM</p>
+      <h2 class="text-3xl md:text-5xl font-bold tracking-tight mb-4">不是记住全部，<br class="md:hidden">而是记住重点</h2>
+      <p class="text-zinc-400 max-w-2xl mx-auto leading-relaxed">
+        每个听歌场景是一段独立记忆：最近的话保留原文，更早的话压成摘要，歌单和调音单独存好。
+        压缩只做投影，不删原始记录。
+      </p>
+    </div>
+
+    <div class="glass rounded-3xl p-5 md:p-8">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-brand-500 pulse-dot"></span>
+          <span class="text-xs font-mono text-brand-400">SESSION MEMORY PIPELINE</span>
+        </div>
+        <span class="text-[11px] text-zinc-500">本地优先 · 原文保留 · 按需加载</span>
+      </div>
+
+      <!-- 记忆来源 -->
+      <div class="grid sm:grid-cols-3 gap-3">
+        <div class="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+          <div class="flex items-center gap-2 text-sm font-semibold mb-1">
+            <i data-lucide="message-square" class="w-4 h-4 text-brand-400"></i>
+            对话
+          </div>
+          <p class="text-[11px] text-zinc-500 leading-relaxed">用户说想要什么，AI 怎么回应</p>
+        </div>
+        <div class="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+          <div class="flex items-center gap-2 text-sm font-semibold mb-1">
+            <i data-lucide="music-2" class="w-4 h-4 text-brand-400"></i>
+            歌曲结果
+          </div>
+          <p class="text-[11px] text-zinc-500 leading-relaxed">每轮候选、精排理由与最终选择</p>
+        </div>
+        <div class="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+          <div class="flex items-center gap-2 text-sm font-semibold mb-1">
+            <i data-lucide="sliders-horizontal" class="w-4 h-4 text-brand-400"></i>
+            场景状态
+          </div>
+          <p class="text-[11px] text-zinc-500 leading-relaxed">歌单、调音与结算结果</p>
+        </div>
+      </div>
+
+      <!-- 写入 -->
+      <div class="flex flex-col items-center py-3">
+        <div class="w-px h-4 bg-brand-500/40"></div>
+        <span class="my-1 text-[10px] font-mono text-brand-400 bg-brand-500/10 border border-brand-500/25 rounded-full px-3 py-1">
+          每次对话与操作，追加一条
+        </span>
+        <div class="w-px h-4 bg-brand-500/40"></div>
+      </div>
+
+      <!-- 会话日志 -->
+      <div class="rounded-2xl border border-brand-500/25 bg-brand-500/[0.04] p-4 md:p-5">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div class="flex items-center gap-2.5">
+            <span class="w-8 h-8 rounded-lg bg-brand-500/15 border border-brand-500/30 flex items-center justify-center">
+              <i data-lucide="database" class="w-4 h-4 text-brand-400"></i>
+            </span>
+            <div>
+              <div class="text-sm font-semibold">会话日志</div>
+              <div class="text-[11px] text-zinc-500">浏览器本地数据库 · 一条消息一条记录</div>
+            </div>
+          </div>
+          <div class="flex gap-2">
+            <span class="text-[10px] font-mono text-brand-300 bg-brand-500/10 border border-brand-500/25 rounded-full px-2.5 py-1">只追加</span>
+            <span class="text-[10px] font-mono text-brand-300 bg-brand-500/10 border border-brand-500/25 rounded-full px-2.5 py-1">保留历史</span>
+          </div>
+        </div>
+
+        <div class="rounded-xl bg-black/30 border border-white/5 px-3 py-2.5 font-mono text-[11px] leading-6 text-zinc-400 overflow-x-auto">
+          <div><span class="text-zinc-300">用户</span> 深夜写代码，来点不吵的</div>
+          <div><span class="text-brand-400">AI</span> 给出一批候选 · 已按氛围精排</div>
+          <div><span class="text-amber-400">状态</span> 歌单与调音已保存</div>
+          <div class="text-zinc-600">…</div>
+        </div>
+
+        <p class="text-[11px] text-zinc-500 mt-3">写入新消息不会重写整段历史，旧会话可以随时翻回去看。</p>
+      </div>
+
+      <!-- 分流 -->
+      <div class="flex flex-col items-center py-3">
+        <div class="w-px h-4 bg-zinc-700"></div>
+        <span class="my-1 text-[10px] text-zinc-500">需要时，从日志里取出记忆</span>
+        <div class="w-px h-4 bg-zinc-700"></div>
+      </div>
+
+      <!-- 三层记忆 -->
+      <div class="grid md:grid-cols-3 gap-3">
+        <div class="rounded-2xl border border-sky-500/25 bg-sky-500/[0.05] p-4">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="w-6 h-6 rounded-md bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-[10px] font-mono text-sky-400">01</span>
+            <div class="text-sm font-semibold">最近原文</div>
+          </div>
+          <p class="text-[11px] text-zinc-400 leading-relaxed">最近一段对话保留原文，侧边栏回看和下一轮对话都接得上。</p>
+          <div class="mt-3 text-[10px] font-mono text-sky-400/80">短期记忆 · 逐字保留</div>
+        </div>
+
+        <div class="rounded-2xl border border-brand-500/30 bg-brand-500/[0.06] p-4">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="w-6 h-6 rounded-md bg-brand-500/15 border border-brand-500/30 flex items-center justify-center text-[10px] font-mono text-brand-400">02</span>
+            <div class="text-sm font-semibold">长期摘要</div>
+          </div>
+          <p class="text-[11px] text-zinc-400 leading-relaxed">更早的对话压成一段精简摘要，跨很多轮也能接上。</p>
+          <div class="mt-3 text-[10px] font-mono text-brand-400/80">长期记忆 · 原文仍保留</div>
+        </div>
+
+        <div class="rounded-2xl border border-amber-500/25 bg-amber-500/[0.05] p-4">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="w-6 h-6 rounded-md bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-[10px] font-mono text-amber-400">03</span>
+            <div class="text-sm font-semibold">场景状态</div>
+          </div>
+          <p class="text-[11px] text-zinc-400 leading-relaxed">歌单、调音、结算结果单独保存，不混进聊天正文。</p>
+          <div class="mt-3 text-[10px] font-mono text-amber-400/80">结构化记忆 · 切换即恢复</div>
+        </div>
+      </div>
+
+      <!-- 汇聚 -->
+      <div class="flex flex-col items-center py-3">
+        <div class="w-px h-4 bg-brand-500/40"></div>
+        <span class="my-1 text-[10px] font-mono text-brand-400 bg-brand-500/10 border border-brand-500/25 rounded-full px-3 py-1">
+          拼成一份刚刚好的上下文
+        </span>
+        <div class="w-px h-4 bg-brand-500/40"></div>
+      </div>
+
+      <!-- 模型上下文 -->
+      <div class="rounded-2xl border border-brand-500/30 bg-gradient-to-br from-brand-500/10 via-transparent to-transparent p-4 md:p-5">
+        <div class="flex flex-col md:flex-row md:items-center gap-4">
+          <div class="flex-1">
+            <div class="text-[10px] font-mono text-brand-400 mb-2">AGENT CONTEXT · 上下文</div>
+            <div class="flex flex-col items-start sm:flex-row sm:flex-wrap sm:items-center gap-2 text-xs">
+              <span class="px-2.5 py-1 rounded-lg bg-brand-500/15 border border-brand-500/25 text-brand-300">更早对话摘要</span>
+              <span class="hidden sm:inline text-zinc-600">+</span>
+              <span class="px-2.5 py-1 rounded-lg bg-sky-500/15 border border-sky-500/25 text-sky-300">上一轮需求 / 结果</span>
+              <span class="hidden sm:inline text-zinc-600">+</span>
+              <span class="px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/25 text-amber-300">本地状态（歌单 / 调音）</span>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/5 border border-white/10 shrink-0">
+            <i data-lucide="sparkles" class="w-4 h-4 text-brand-400"></i>
+            <span class="text-xs font-semibold">LLM 接着聊</span>
+          </div>
+        </div>
+        <p class="text-[11px] text-zinc-500 mt-3">旧内容不重复塞回去，长会话也不会越聊越贵、越聊越偏。</p>
+      </div>
+    </div>
+
+    <!-- 设计原则 -->
+    <div class="grid md:grid-cols-3 gap-4 mt-5">
+      <div class="glass rounded-2xl p-5">
+        <div class="text-[10px] font-mono text-brand-400 mb-2">WHEN IT HAPPENS</div>
+        <h3 class="font-bold text-sm mb-2">什么时候压缩</h3>
+        <div class="flex items-center gap-2 text-[10px] font-mono text-zinc-500 mb-2">
+          <span>较早</span>
+          <div class="flex-1 h-1.5 rounded-full overflow-hidden flex">
+            <div class="w-2/3 bg-brand-500/60"></div>
+            <div class="w-1/3 bg-sky-500/60"></div>
+          </div>
+          <span>最近</span>
+        </div>
+        <div class="flex justify-between text-[10px] text-zinc-500">
+          <span class="text-brand-400">已压缩为摘要</span>
+          <span class="text-sky-400">最近对话原文</span>
+        </div>
+        <p class="text-xs text-zinc-400 leading-relaxed mt-3">对话积累到一定长度后自动压缩，也可以手动触发。摘要失败不影响聊天，下一轮再试。</p>
+      </div>
+
+      <div class="glass rounded-2xl p-5">
+        <div class="text-[10px] font-mono text-brand-400 mb-2">SCENE ISOLATION</div>
+        <h3 class="font-bold text-sm mb-2">一个场景，一段记忆</h3>
+        <p class="text-xs text-zinc-400 leading-relaxed">新会话不会带入旧会话的歌单和调音记录；切回旧会话，对话和保存的状态都还在。</p>
+      </div>
+
+      <div class="glass rounded-2xl p-5">
+        <div class="text-[10px] font-mono text-brand-400 mb-2">YOU OWN THE DATA</div>
+        <h3 class="font-bold text-sm mb-2">原文可查，也能带走</h3>
+        <p class="text-xs text-zinc-400 leading-relaxed">原始消息不会被摘要替换。可搜索、归档、导出 JSONL，也能镜像到本地文件夹。</p>
       </div>
     </div>
   </section>
@@ -308,7 +530,7 @@ tailwind.config = {
     <div class="text-center mb-16">
       <p class="text-sm text-brand-400 font-mono mb-3">// WORKFLOW</p>
       <h2 class="text-3xl md:text-5xl font-bold tracking-tight mb-4">Agent 的 4 阶段流水线</h2>
-      <p class="text-zinc-400 max-w-2xl mx-auto">LLM 只调用 2 次，中间的检索和过滤全在本地完成</p>
+      <p class="text-zinc-400 max-w-2xl mx-auto">检索流水线内，LLM 只调用 2 次；中间的检索和过滤全在本地完成</p>
     </div>
 
     <div class="grid md:grid-cols-4 gap-4 max-w-5xl mx-auto">
@@ -389,7 +611,11 @@ tailwind.config = {
   <section id="architecture" class="relative z-10 max-w-5xl mx-auto px-6 py-24">
     <div class="text-center mb-16">
       <p class="text-sm text-brand-400 font-mono mb-3">// ARCHITECTURE</p>
-      <h2 class="text-3xl md:text-5xl font-bold tracking-tight">纯前端，零后端</h2>
+      <h2 class="text-3xl md:text-5xl font-bold tracking-tight">数据在本地，模型自己选</h2>
+      <p class="text-zinc-400 max-w-2xl mx-auto mt-4 leading-relaxed">
+        会话、歌单、调音都由前端页面在浏览器本地管理，不依赖自建服务器或云数据库。
+        模型接口同样开放，想接哪家由你决定。
+      </p>
     </div>
 
     <div class="glass rounded-3xl p-8 md:p-10">
@@ -401,7 +627,7 @@ tailwind.config = {
           </div>
           <div>
             <div class="font-semibold tracking-tight">Side Panel</div>
-            <div class="text-xs text-zinc-400 mt-1">对话 UI · 会话管理 · 播放器界面</div>
+            <div class="text-xs text-zinc-400 mt-1">对话 UI · 会话记忆 · 音效库 · 本地曲目</div>
           </div>
         </div>
 
@@ -421,51 +647,90 @@ tailwind.config = {
           </div>
           <div>
             <div class="font-semibold tracking-tight">Background Service Worker</div>
-            <div class="text-xs text-zinc-400 mt-1">Agent 编排 · LLM 调用 · 网易云 API</div>
+            <div class="text-xs text-zinc-400 mt-1">Agent 编排 · 摘要压缩 · LLM 调用</div>
           </div>
         </div>
 
         <!-- 分叉连接 -->
-        <div class="grid md:grid-cols-2 gap-6 w-full max-w-2xl">
+        <div class="grid md:grid-cols-3 gap-4 w-full max-w-3xl">
           <div class="flex flex-col items-center">
             <div class="w-px h-6 bg-zinc-700"></div>
-            <div class="w-full rounded-2xl border border-white/10 bg-white/[0.03] p-5 flex items-center gap-4 hover:border-brand-500/40 transition-colors">
-              <div class="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
-                <i data-lucide="volume-2" class="w-5 h-5 text-brand-400"></i>
+            <div class="w-full rounded-2xl border border-white/10 bg-white/[0.03] p-4 flex items-center gap-3 hover:border-brand-500/40 transition-colors">
+              <div class="w-9 h-9 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
+                <i data-lucide="volume-2" class="w-4 h-4 text-brand-400"></i>
               </div>
               <div>
                 <div class="font-semibold text-sm tracking-tight">Offscreen Doc</div>
-                <div class="text-xs text-zinc-500 mt-1">音频播放 + EQ</div>
+                <div class="text-[11px] text-zinc-500 mt-1">音频播放 · EQ · 音效链</div>
               </div>
             </div>
           </div>
           <div class="flex flex-col items-center">
             <div class="w-px h-6 bg-zinc-700"></div>
-            <div class="w-full rounded-2xl border border-white/10 bg-white/[0.03] p-5 flex items-center gap-4 hover:border-brand-500/40 transition-colors">
-              <div class="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
-                <i data-lucide="hard-drive" class="w-5 h-5 text-brand-400"></i>
+            <div class="w-full rounded-2xl border border-white/10 bg-white/[0.03] p-4 flex items-center gap-3 hover:border-brand-500/40 transition-colors">
+              <div class="w-9 h-9 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
+                <i data-lucide="database" class="w-4 h-4 text-brand-400"></i>
+              </div>
+              <div>
+                <div class="font-semibold text-sm tracking-tight">IndexedDB</div>
+                <div class="text-[11px] text-zinc-500 mt-1">会话日志 · 摘要 · 搜索</div>
+              </div>
+            </div>
+          </div>
+          <div class="flex flex-col items-center">
+            <div class="w-px h-6 bg-zinc-700"></div>
+            <div class="w-full rounded-2xl border border-white/10 bg-white/[0.03] p-4 flex items-center gap-3 hover:border-brand-500/40 transition-colors">
+              <div class="w-9 h-9 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
+                <i data-lucide="hard-drive" class="w-4 h-4 text-brand-400"></i>
               </div>
               <div>
                 <div class="font-semibold text-sm tracking-tight">本地文件夹</div>
-                <div class="text-xs text-zinc-500 mt-1 font-mono">playlists.json · sessions/</div>
+                <div class="text-[11px] text-zinc-500 mt-1 font-mono">sessions/*.jsonl</div>
               </div>
             </div>
           </div>
         </div>
       </div>
 
+      <!-- 音频链 -->
+      <div class="mt-8 rounded-2xl border border-white/10 bg-black/20 p-4">
+        <div class="flex flex-col md:flex-row md:items-center gap-2 md:gap-2.5 text-[10px] md:text-[11px] font-mono text-zinc-400">
+          <span class="text-brand-400 shrink-0">AUDIO CHAIN</span>
+          <span>音源</span>
+          <span class="text-zinc-600">→</span>
+          <span>前级</span>
+          <span class="text-zinc-600">→</span>
+          <span>10 段 EQ</span>
+          <span class="text-zinc-600">→</span>
+          <span>宽度</span>
+          <span class="text-zinc-600">→</span>
+          <span>串音</span>
+          <span class="text-zinc-600">→</span>
+          <span>早期反射</span>
+          <span class="text-zinc-600">→</span>
+          <span>混响</span>
+          <span class="text-zinc-600">→</span>
+          <span>动态</span>
+          <span class="text-zinc-600">→</span>
+          <span>限幅</span>
+        </div>
+        <p class="text-xs text-zinc-500 mt-2 leading-relaxed">
+          每个效果块都能单独旁路；默认全关时，听感与只有 EQ 时一致。本地文件与在线歌曲走同一条链。
+        </p>
+      </div>
+
       <div class="grid md:grid-cols-3 gap-6 mt-10">
         <div>
-          <div class="text-brand-400 font-mono text-xs mb-2">NO BACKEND</div>
-          <div class="text-sm text-zinc-300">所有请求直接从浏览器发起</div>
+          <div class="text-brand-400 font-mono text-xs mb-2">LOCAL DATA</div>
+          <div class="text-sm text-zinc-300">会话、歌单、调音存在浏览器本地</div>
         </div>
         <div>
-          <div class="text-brand-400 font-mono text-xs mb-2">NO TRACKING</div>
-          <div class="text-sm text-zinc-300">不收集任何使用数据</div>
+          <div class="text-brand-400 font-mono text-xs mb-2">NO CLOUD DB</div>
+          <div class="text-sm text-zinc-300">不依赖自建服务器或云数据库</div>
         </div>
         <div>
-          <div class="text-brand-400 font-mono text-xs mb-2">BYOK</div>
-          <div class="text-sm text-zinc-300">模型 API Key 你自己带</div>
+          <div class="text-brand-400 font-mono text-xs mb-2">CUSTOM API</div>
+          <div class="text-sm text-zinc-300">模型和接口由你决定</div>
         </div>
       </div>
     </div>

@@ -7,8 +7,35 @@ export function createSessionHandlers(sessions) {
   if (!sessions) throw new Error('createSessionHandlers 需要 sessions');
 
   return {
-    listSessions: async () => ({ ok: true, sessions: await sessions.list() }),
-    getCurrentSession: async () => ({ ok: true, session: await sessions.current() }),
+    listSessions: async (req = {}) => ({
+      ok: true,
+      sessions: await sessions.list({ includeArchived: Boolean(req.includeArchived) }),
+    }),
+    searchSessions: async (req) => ({
+      ok: true,
+      sessions: await sessions.search(req.query, { limit: req.limit }),
+    }),
+    archiveSession: async (req) => ({ ok: true, session: await sessions.archive(req.id) }),
+    unarchiveSession: async (req) => ({ ok: true, session: await sessions.unarchive(req.id) }),
+    getStorageStats: async () => ({ ok: true, stats: await sessions.stats() }),
+    getCurrentSession: async () => ({
+      ok: true,
+      session: await (sessions.currentPage ? sessions.currentPage() : sessions.current()),
+    }),
+    getSessionState: async (req) => ({ ok: true, session: await sessions.state(req.sessionId) }),
+    exportSessionJsonl: async (req) => {
+      const result = await sessions.exportJsonl(req.id);
+      if (!result) return { ok: false, error: '找不到这个会话' };
+      return { ok: true, ...result };
+    },
+    importSessionJsonl: async (req) => ({
+      ok: true,
+      ...(await sessions.importJsonl(req.content, { overwrite: Boolean(req.overwrite) })),
+    }),
+    loadEarlierMessages: async (req) => ({
+      ok: true,
+      ...(await sessions.loadEarlier(req.sessionId, req.beforeSeq, req.limit)),
+    }),
     createSession: async (req) => ({ ok: true, session: await sessions.create(req.name) }),
     switchSession: async (req) => ({ ok: true, session: await sessions.switchTo(req.id) }),
     deleteSession: async (req) => ({ ok: true, sessions: await sessions.remove(req.id) }),

@@ -23,6 +23,13 @@ export function createChatHandlers({ chat, sessions, forwardToSidepanel }) {
       return { ok: true };
     },
 
+    compactSession: async (req) => {
+      if (!req?.sessionId) return { ok: false, error: '缺少会话 id' };
+      if (typeof chat.compact !== 'function') return { ok: false, error: '当前不支持会话压缩' };
+      const summary = await chat.compact(req.sessionId);
+      return { ok: true, compacted: Boolean(summary), summary: summary || null };
+    },
+
     chatAbort: async () => {
       // 没在跑时不广播结束事件，避免把下一轮的思考节点提前关掉。
       const aborted = chat.abort();

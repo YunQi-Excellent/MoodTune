@@ -127,27 +127,70 @@ source → preamp → EQ(10 段 peaking) → 宽度 → 串音 → 早期反射 
 
 ### 持久化
 
-`chrome.storage.local` 的键集中在 [src/app/storage/keys.js](../src/app/storage/keys.js)：
+会话正文已经从 `chrome.storage.local` 的单 key 数组迁移到 **IndexedDB 日志型存储**，定义在 [src/app/storage/session-log.js](../src/app/storage/session-log.js)。旧键仍会保留一个版本作为迁移回滚备份，但运行时不再读写。
 
-| 键 | 内容 |
-| --- | --- |
-| `chatSessions` | 会话数组（含 messages / cart / result） |
-| `currentSessionId` | 当前会话 id |
-| `savedPlaylists` | 保存的播放列表 |
-| `eqPresets` | EQ 预设 |
-| `currentEq` / `currentEffects` / `playerVolume` / `playerPlaybackMode` | 播放器偏好 |
-| `localMusicLibrary` | 本地音乐索引（路径、标签、时长）；不含音频文件本身 |
-| `llmConfig` | 大模型配置（options 页写入） |
+| 存储 | 键 / store | 内容 |
+| --- | --- | --- |
+| IndexedDB | `meta` | `schemaVersion`、`currentSessionId`、迁移时间 |
+| IndexedDB | `sessions` | 会话元数据（名称、时间、`lastSeq`、各类计数） |
+| IndexedDB | `messages` | 按 `[sessionId, seq]` 追加的消息记录 |
+| IndexedDB | `states` | 购物车、`cartEq`、结算结果等可变投影 |
+| chrome.storage.local | `chatSessions` | v1 旧数组，仅首次迁移读取，成功后保留备份 |
+| chrome.storage.local | `currentSessionId` | v1 旧当前会话，仅迁移读取 |
+| chrome.storage.local | `savedPlaylists` | 保存的播放列表 |
+| chrome.storage.local | `eqPresets` | EQ 预设 |
+| chrome.storage.local | `currentEq` / `currentEffects` / `playerVolume` / `playerPlaybackMode` | 播放器偏好 |
+| chrome.storage.local | `localMusicLibrary` | 本地音乐索引（路径、标签、时长）；不含音频文件本身 |
+| chrome.storage.local | `llmConfig` | 大模型配置（options 页写入） |
 
-所有「读 → 改 → 写」都必须经过 [src/app/storage](../src/app/storage) 里的仓储，它们共享 [storage-queue.js](../src/app/storage/storage-queue.js) 的按键队列：同一个键串行、不同键并行。直接 `chrome.storage.local.set` 只允许出现在单键、无读改写的场景（偏好回写、文件夹恢复）。
+会话写入规则：
 
-`fs-sync.js` 把上述四个业务键镜像到用户选择的文件夹（`playlists.json`、`eq-presets.json`、`sessions/*.json`、`.meta.json`），恢复时同样走 storage 队列；本地音乐索引与目录句柄不参与镜像（路径只对本机有效）。
+- `appendMessage` 只写一条 `messages` 记录并更新 `sessions` 的计数/`lastSeq`，不再整表重写。
+- `cart` / `result` / `cartEq` 写入 `states`，不会触碰消息记录。
+- 列表接口只读 `sessions` 元数据；打开会话读取最后一页消息，向上滚动时按 `[sessionId, seq]` 游标继续加载。
+- 迁移在第一次打开数据库时自动执行：读取旧 `chatSessions`，按数组顺序为消息分配 `seq`，写入后设置 `schemaVersion = 2`；重复执行是幂等的。
+
+`chrome.storage.local` 的其余业务键仍共享 [storage-queue.js](../src/app/storage/storage-queue.js) 的按键队列：同一个键串行、不同键并行。直接 `chrome.storage.local.set` 只允许出现在单键、无读改写的场景（偏好回写、文件夹恢复）。
+
+`fs-sync.js` 通过 `setSessionBridge()` 接会话仓储，把数据镜像到用户选择的文件夹（`playlists.json`、`eq-presets.json`、`sessions/*.jsonl`、`.meta.json`）；恢复时调用仓储的 `replaceAll`，不再写回旧 `chatSessions`。本地音乐索引与目录句柄不参与镜像（路径只对本机有效）。
+
+每个会话文件采用 JSONL 格式（[session-jsonl.js](../src/app/storage/session-jsonl.js)）：
+
+```jsonl
+{"type":"session","version":2,"id":"sess-...","name":"...","createdAt":...}
+{"type":"state","cart":[],"cartEq":null,"result":null}
+{"type":"message","seq":1,"id":"msg-...","role":"user","kind":"text","text":"..."}
+{"type":"summary","throughSeq":40,"text":"..."}
+```
+
+- 第一行必须是 `session` 头；`state` 保存购物车/结算投影；`message` 按 `seq` 排序；`summary` 预留给后续压缩。
+- 侧边栏支持单会话「导出」和文件「导入」；导入时 id 冲突默认新建会话，也可显式覆盖。
+- 文件夹同步优先读 `.jsonl`，兼容旧的 `<id>.json`；push 会写 `.jsonl` 并清理同 id 旧 `.json`。
+
+### 会话搜索、归档与存储用量
+
+- `messages` 追加时把可见文本（用户文本、计划主题、候选歌名/歌手、错误原因等）写入 `sessions.searchText`，上限 32k 字符；搜索直接扫描会话级物化文本，支持中文子串和多词交集，避免每次查询都遍历全部消息。
+- `sessions.bytes` 保存消息 + 状态的估算字节数；追加只做增量累加，状态更新只做差额修正。
+- 列表默认只返回未归档会话；`archive` 设置 `archivedAt`，若归档的是当前会话则自动切到下一个未归档会话。删除只允许针对已归档会话，避免误删。
+- 存储面板使用 `navigator.storage.estimate()` 展示 origin 用量/配额，并汇总会话数、归档数、消息数和估算字节数；`chrome.storage.local.getBytesInUse` 可用时一并展示。
+
+### 会话压缩
+
+压缩是“投影”，不是删除：原始消息仍然保留，只在 `sessions`/JSONL 里增加 `summary` 和 `summaryThroughSeq`。
+
+- 一轮对话结束后自动检查未摘要消息数；达到 `minMessages=60` 或字符数超过阈值时，调用一次模型，把较早消息压成摘要，保留最近 `keepRecent=20` 条。
+- 手动「压缩」按钮可以跳过阈值，但仍保留最近 20 条。
+- 聊天上下文只使用「摘要 + 最近消息」；`buildFollowUpContext` 会过滤掉 `seq <= summaryThroughSeq` 的旧消息，避免重复。
+- 摘要失败只记日志，不阻塞聊天；下一次达到阈值再重试。
+- 会话列表显示「摘要至 N」，JSONL 里对应一行 `type=summary`。
 
 ### 消息协议
 
 - 请求两种形状：`{ action: 'listSessions' }` 或 `{ target: 'background', type: 'PLAYER_TOGGLE' }`
 - 响应统一信封：成功 `{ ok: true, ... }`，失败 `{ ok: false, error }`（fs 系列历史原因用 `reason`）
-- 事件：`{ target: 'sidepanel', type: 'CHAT_STREAM_CHUNK' | … }`
+- 事件：`{ target: 'sidepanel', type: 'CHAT_STREAM_CHUNK' | 'SESSION_CHANGED' | … }`
+- 会话分页：`getCurrentSession` / `switchSession` 返回最后一页；`loadEarlierMessages` 按 `beforeSeq` 向前翻页。
+- 会话导入导出：`exportSessionJsonl` 返回 JSONL 文本与文件名；`importSessionJsonl` 解析并写入新会话。
 
 新增消息只需在 [handlers](../src/app/background/handlers) 里加一个方法并合并进路由，不要再写 if 分支。
 
@@ -160,7 +203,7 @@ source → preamp → EQ(10 段 peaking) → 宽度 → 串音 → 早期反射 
 | 零构建、原生 ESM | 无打包配置；`manifest.test.js` 校验入口存在且为 module |
 | core 不依赖宿主 | `src/core/*` 只 import 同层与常量 |
 | offscreen 不直连平台 | [tests/offscreen.test.js](../tests/offscreen.test.js) 禁止 `music.163.com` / 直接 `fetch` |
-| 会话写入串行 | [tests/app/storage/sessions.test.js](../tests/app/storage/sessions.test.js) 并发用例 |
+| 会话追加不丢写 | [tests/app/storage/session-log.test.js](../tests/app/storage/session-log.test.js) 并发/分页用例 |
 | 默认效果链必须完全旁路 | [tests/app/audio/graph.test.js](../tests/app/audio/graph.test.js) |
 | 页面无内联脚本/样式 | [tests/pages.test.js](../tests/pages.test.js) |
 | 版本号单一来源 | `manifest.json`；`fs-sync` 用 `chrome.runtime.getManifest().version` |
