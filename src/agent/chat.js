@@ -815,11 +815,8 @@ export function createChatAgent({
 
   async function run({ userNeed, sessionId, userMessageId }, signal) {
     let session = null;
-    if (sessionId) {
-      const list = await sessions.list();
-      session = list.find(item => item.id === sessionId) || null;
-    }
-    if (!session) session = await sessions.current();
+    if (sessionId) session = await sessions.recent(sessionId, 60);
+    if (!session) session = await sessions.recentCurrent(60);
     if (!session) session = await sessions.create(userNeed.slice(0, 20) || '新会话');
 
     const nextMessageId = () => newId('msg');
@@ -940,7 +937,7 @@ export function createChatAgent({
 
       if (mode === 'eq') {
         const eqPrompt = routePayload.eqPrompt || userNeed;
-        const fresh = (await sessions.get(session.id)) || session;
+        const fresh = (await sessions.state(session.id)) || session;
         const currentEq = fresh.cartEq || fresh.result?.eq || null;
         notify('CHAT_THINKING_START', { sessionId: session.id, stage: 'eq' });
         const result = await tuneAndApply(eqPrompt, signal, session.id, currentEq);
@@ -964,7 +961,7 @@ export function createChatAgent({
 
       if (mode === 'open-eq-panel') {
         notify('CHAT_THINKING_END', { sessionId: session.id });
-        const fresh = (await sessions.get(session.id)) || session;
+        const fresh = (await sessions.state(session.id)) || session;
         const currentEq = fresh.cartEq || fresh.result?.eq || defaultEq();
         await append({ role: 'agent', kind: 'eq-card', eq: currentEq, reason: null });
         return;
@@ -974,7 +971,7 @@ export function createChatAgent({
         const name = routePayload.name
           || `调音-${new Date(now()).toLocaleDateString('zh-CN')}`;
         try {
-          const fresh = await sessions.get(session.id);
+          const fresh = await sessions.state(session.id);
           const eqToSave = fresh?.cartEq || fresh?.result?.eq;
           if (!eqToSave) throw new Error('当前会话还没有调音');
 
@@ -990,7 +987,7 @@ export function createChatAgent({
         const name = routePayload.name
           || `列表-${new Date(now()).toLocaleDateString('zh-CN')}`;
         try {
-          const fresh = await sessions.get(session.id);
+          const fresh = await sessions.state(session.id);
           const songsToSave = (fresh?.cart && fresh.cart.length > 0)
             ? fresh.cart
             : (fresh?.result?.playlist || []);
@@ -1016,7 +1013,7 @@ export function createChatAgent({
         return;
       }
 
-      const freshSession = (await sessions.get(session.id)) || session;
+      const freshSession = (await sessions.recent(session.id, 60)) || session;
       const cartSongs = freshSession.cart || [];
 
       // 「再找一些」：承接上一轮结果，但已经在会话歌单里的不再重复列出。

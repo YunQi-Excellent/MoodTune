@@ -8,7 +8,15 @@ export function createSessionHandlers(sessions) {
 
   return {
     listSessions: async () => ({ ok: true, sessions: await sessions.list() }),
-    getCurrentSession: async () => ({ ok: true, session: await sessions.current() }),
+    getCurrentSession: async () => ({
+      ok: true,
+      session: await (sessions.currentPage ? sessions.currentPage() : sessions.current()),
+    }),
+    getSessionState: async (req) => ({ ok: true, session: await sessions.state(req.sessionId) }),
+    loadEarlierMessages: async (req) => ({
+      ok: true,
+      ...(await sessions.loadEarlier(req.sessionId, req.beforeSeq, req.limit)),
+    }),
     createSession: async (req) => ({ ok: true, session: await sessions.create(req.name) }),
     switchSession: async (req) => ({ ok: true, session: await sessions.switchTo(req.id) }),
     deleteSession: async (req) => ({ ok: true, sessions: await sessions.remove(req.id) }),

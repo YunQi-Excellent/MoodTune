@@ -110,11 +110,13 @@ function renderSessionList() {
   const currentId = state.currentSession?.id;
   el.innerHTML = state.sessions.map(s => {
     const active = s.id === currentId ? ' active' : '';
-    const count = s.messages?.length || 0;
-    const cartCount = Array.isArray(s.cart) ? s.cart.length : 0;
-    const resultCount = s.result?.playlist?.length || 0;
-    const hasResult = !!(s.result || (s.eq || s.playlistSnapshot));
-    const hasEq = (s.result?.eq || s.cartEq) ? '🎛' : '';
+    const count = Number.isFinite(s.messageCount) ? s.messageCount : (s.messages?.length || 0);
+    const cartCount = Number.isFinite(s.cartCount) ? s.cartCount : (Array.isArray(s.cart) ? s.cart.length : 0);
+    const resultCount = Number.isFinite(s.resultCount) ? s.resultCount : (s.result?.playlist?.length || 0);
+    const hasResult = typeof s.hasResult === 'boolean'
+      ? s.hasResult
+      : !!(s.result || (s.eq || s.playlistSnapshot));
+    const hasEq = (s.hasEq ?? Boolean(s.result?.eq || s.cartEq)) ? '🎛' : '';
     const cartHint = cartCount > 0 ? `· 🎵${cartCount}` : '';
     const resultHint = resultCount > 0 ? `· 结算${resultCount}` : '';
     const restoreBtn = hasResult
@@ -191,8 +193,8 @@ $('#sessionList').addEventListener('click', async e => {
       await sendMsg({ action: 'renameSession', id, name: name.trim() });
       refreshSessions();
       if (id === state.currentSession?.id) {
-        const r = await sendMsg({ action: 'getCurrentSession' });
-        if (r?.ok) { state.currentSession = r.session; updateHeaderSessionName(); }
+        state.currentSession.name = name.trim();
+        updateHeaderSessionName();
       }
     }
     return;
@@ -241,6 +243,24 @@ function closeCartDrawer() {
   $('#backdrop').classList.remove('show');
 }
 $('#closeCartDrawer').addEventListener('click', closeCartDrawer);
+
+async function refreshCurrentSessionState() {
+  if (!state.currentSession) return;
+  const sessionId = state.currentSession.id;
+  const response = await sendMsg({ action: 'getSessionState', sessionId });
+  if (!response?.ok || !response.session || state.currentSession?.id !== sessionId) return;
+  Object.assign(state.currentSession, {
+    cart: response.session.cart,
+    cartEq: response.session.cartEq,
+    result: response.session.result,
+    songCount: response.session.songCount,
+    cartCount: response.session.cartCount,
+    resultCount: response.session.resultCount,
+    hasResult: response.session.hasResult,
+  });
+  updateCartUI();
+  refreshPlanCards();
+}
 
 function updateCartUI() {
   const cart = state.currentSession?.cart || [];
@@ -397,11 +417,7 @@ $('#cartSettleBtn').addEventListener('click', async () => {
     const r = await sendMsg({ action: 'cartSettle', sessionId: state.currentSession.id });
     if (r?.ok) {
       pushLog('ok', `已替换播放队列并开始播放 ${r.count} 首`);
-      const fresh = await sendMsg({ action: 'getCurrentSession' });
-      if (fresh?.ok) {
-        state.currentSession = fresh.session;
-        updateCartUI();
-      }
+      await refreshCurrentSessionState();
       closeCartDrawer();
       player.refresh();
     } else {
@@ -694,10 +710,7 @@ async function addLocalTrackToCart(track) {
     songs: [track],
   });
   if (r?.ok) {
-    const fresh = await sendMsg({ action: 'getCurrentSession' });
-    if (fresh?.ok) state.currentSession = fresh.session;
-    updateCartUI();
-    refreshPlanCards();
+    await refreshCurrentSessionState();
     pushLog('ok', `已加入会话歌单：${track.name || ''}`);
   } else {
     pushLog('err', '加入会话歌单失败：' + (r?.error || '未知'));
@@ -956,12 +969,7 @@ $('#libraryBody').addEventListener('click', async e => {
     });
     if (r?.ok) {
       pushLog('ok', `已加入 ${r.added} 首到会话歌单`);
-      const fresh = await sendMsg({ action: 'getCurrentSession' });
-      if (fresh?.ok) {
-        state.currentSession = fresh.session;
-        updateCartUI();
-        refreshPlanCards();
-      }
+      await refreshCurrentSessionState();
     } else {
       pushLog('err', '加入失败：' + (r?.error || '未知'));
     }
@@ -1090,7 +1098,7 @@ $('#dock-drawer').addEventListener('click', async e => {
 });
 
 /* ================= 主渲染 (严密的 Git 树状态流) ================= */
-function renderCurrentSession() {
+function renderCurrentSession({ scroll = true } = {}) {
   const stream = $('#chatStream');
   stream.innerHTML = '';
   state.messageNodes.clear();
@@ -1114,9 +1122,69 @@ function renderCurrentSession() {
       </div>`;
     return;
   }
+  if (state.currentSession.hasMoreMessages) {
+    const remaining = Math.max(0, (state.currentSession.messageCount || 0) - messages.length);
+    const button = document.createElement('button');
+    button.id = 'loadEarlierMessages';
+    button.className = 'load-earlier';
+    button.textContent = remaining > 0
+      ? `加载更早的消息（还有 ${remaining} 条）`
+      : '加载更早的消息';
+    stream.appendChild(button);
+  }
+
   for (const m of messages) appendMessageNode(m);
-  scrollToBottom();
+  if (scroll) scrollToBottom();
 }
+
+let loadingEarlier = false;
+async function loadEarlierMessages() {
+  const session = state.currentSession;
+  if (!session?.hasMoreMessages || loadingEarlier || state.running) return;
+  loadingEarlier = true;
+
+  const button = $('#loadEarlierMessages');
+  if (button) {
+    button.disabled = true;
+    button.textContent = '加载中…';
+  }
+
+  const response = await sendMsg({
+    action: 'loadEarlierMessages',
+    sessionId: session.id,
+    beforeSeq: session.oldestSeq,
+  });
+  loadingEarlier = false;
+
+  if (!response?.ok) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '加载失败，点击重试';
+    }
+    return;
+  }
+
+  if (state.currentSession !== session) return;
+
+  const stream = $('#chatStream');
+  const previousHeight = stream.scrollHeight;
+  const previousTop = stream.scrollTop;
+
+  session.messages = [...(response.messages || []), ...(session.messages || [])];
+  session.oldestSeq = response.oldestSeq;
+  session.hasMoreMessages = Boolean(response.hasMore);
+  session.messageCount = response.messageCount ?? session.messageCount;
+
+  renderCurrentSession({ scroll: false });
+  requestAnimationFrame(() => {
+    stream.scrollTop = stream.scrollHeight - previousHeight + previousTop;
+  });
+}
+
+$('#chatStream').addEventListener('click', event => {
+  if (event.target.closest('#loadEarlierMessages')) loadEarlierMessages();
+});
+
 function removeEmptyChat() {
   const empty = $('#emptyChat');
   if (empty) empty.remove();
@@ -1346,12 +1414,7 @@ $('#chatStream').addEventListener('click', async e => {
       });
       if (!r?.ok) throw new Error(r?.error || '加入失败');
       pushLog('ok', `加入会话歌单 ${r.added} 首（共 ${r.total} 首）`);
-      const fresh = await sendMsg({ action: 'getCurrentSession' });
-      if (fresh?.ok) {
-        state.currentSession = fresh.session;
-        updateCartUI();
-        refreshPlanCards();
-      }
+      await refreshCurrentSessionState();
     } catch (err) {
       pushLog('err', '加入失败：' + (err?.message || err));
     } finally {
@@ -1503,6 +1566,7 @@ async function sendChat() {
   const userMsg = { id: userMessageId, role: 'user', kind: 'text', text, at: Date.now() };
   state.currentSession.messages = state.currentSession.messages || [];
   state.currentSession.messages.push(userMsg);
+  state.currentSession.messageCount = (state.currentSession.messageCount || 0) + 1;
   appendMessageNode(userMsg, { animate: true });
 
   pushLog('stage', '发送：' + text);
@@ -1632,6 +1696,29 @@ function finishThinking(options) {
 /* ================= 监听与同步 ================= */
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg?.target) return;
+  if (msg.target === 'sidepanel' && msg.type === 'SESSION_CHANGED') {
+    const payload = msg.payload || {};
+    if (payload.type === 'replace') {
+      refreshSessions();
+      loadCurrentSession();
+      return;
+    }
+    if (payload.sessionId && payload.sessionId !== state.currentSession?.id) return;
+
+    if (payload.type === 'append' && payload.message?.id) {
+      const messages = state.currentSession?.messages || [];
+      if (state.currentSession && !messages.some(item => item.id === payload.message.id)) {
+        messages.push(payload.message);
+        state.currentSession.messages = messages;
+        state.currentSession.messageCount = (state.currentSession.messageCount || 0) + 1;
+        appendMessageNode(payload.message, { animate: true });
+        scrollToBottom();
+      }
+    }
+    if (payload.type === 'update') updateCartUI();
+    if ($('#session-drawer').classList.contains('open')) refreshSessions();
+    return;
+  }
   if (msg.target === 'sidepanel' && msg.type === 'PLAYER_STATE_CHANGED') {
     player.applyState(msg.payload);
     return;

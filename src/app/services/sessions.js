@@ -9,12 +9,13 @@ import { trackKey } from '../../core/track.js';
  * 结算要推歌单给播放器、恢复要重新应用 EQ、打开 EQ 面板要插入一张卡片。
  *
  * @param {object} options
- * @param {object} options.store 会话仓储（src/app/storage/sessions.js）
+ * @param {object} options.store 会话仓储（src/app/storage/session-log.js）
  * @param {object} options.player 播放器服务（src/app/services/player.js）
  * @param {(song: object) => object} options.normalizeSong 歌曲归一化
  * @param {() => object} [options.defaultEq] 平坦 EQ 构造器
  * @param {(prefix: string) => string} [options.newId]
  * @param {() => number} [options.now]
+ * @param {(event: object) => void} [options.onChange] 会话变化通知
  */
 export function createSessionService({
   store,
@@ -23,6 +24,7 @@ export function createSessionService({
   defaultEq = makeDefaultEq,
   newId = prefix => createId(prefix),
   now = () => Date.now(),
+  onChange = () => {},
 } = {}) {
   if (!store) throw new Error('createSessionService 需要 store');
   if (!player) throw new Error('createSessionService 需要 player');
@@ -34,20 +36,89 @@ export function createSessionService({
     return session;
   };
 
+  const notify = (type, sessionId, extra = {}) => {
+    try { onChange({ type, sessionId, ...extra }); } catch {}
+  };
+
+  const mutate = async (sessionId, mutator, options) => {
+    const result = await store.mutate(sessionId, mutator, options);
+    notify('update', sessionId);
+    return result;
+  };
+
+  const update = async (sessionId, patch) => {
+    const result = await store.update(sessionId, patch);
+    if (result) notify('update', sessionId);
+    return result;
+  };
+
+  const appendMessage = async (sessionId, message) => {
+    const result = await store.appendMessage(sessionId, message);
+    const stored = result?.messages?.[0];
+    notify('append', sessionId, { message: stored });
+    return result;
+  };
+
   const service = {
     /* ---- 基本操作 ---- */
-    list: () => store.list(),
+    list: () => (store.listSummaries ? store.listSummaries() : store.list()),
     current: () => store.getCurrent(),
+    currentPage: options => (
+      store.getCurrentPage ? store.getCurrentPage(options) : store.getCurrent()
+    ),
     get: id => store.get(id),
-    create: name => store.create(name),
-    switchTo: id => store.switchTo(id),
-    remove: id => store.remove(id),
-    rename: (id, name) => store.rename(id, name),
-    appendMessage: (id, message) => store.appendMessage(id, message),
-    update: (id, patch) => store.update(id, patch),
+    state: id => (store.getState ? store.getState(id) : store.get(id)),
+    getPage: (id, options) => (
+      store.getPage ? store.getPage(id, options) : store.get(id)
+    ),
+    recent: (id, limit) => (
+      store.getRecent ? store.getRecent(id, limit) : store.get(id)
+    ),
+    recentCurrent: limit => (
+      store.getCurrentPage ? store.getCurrentPage({ limit }) : store.getCurrent()
+    ),
+
+    async loadEarlier(sessionId, beforeSeq, limit) {
+      if (!store.getPage) return null;
+      const page = await store.getPage(sessionId, { beforeSeq, limit });
+      if (!page) return null;
+      return {
+        messages: page.messages,
+        hasMore: page.hasMoreMessages,
+        oldestSeq: page.oldestSeq,
+        messageCount: page.messageCount,
+      };
+    },
+
+    async create(name) {
+      const session = await store.create(name);
+      notify('create', session.id);
+      return store.getPage ? ((await store.getPage(session.id)) || session) : session;
+    },
+
+    async switchTo(id) {
+      const session = await store.switchTo(id);
+      notify('switch', id);
+      return store.getPage ? ((await store.getPage(id)) || session) : session;
+    },
+
+    async remove(id) {
+      const remaining = await store.remove(id);
+      notify('remove', id);
+      return remaining;
+    },
+
+    async rename(id, name) {
+      const result = await store.rename(id, name);
+      notify('rename', id);
+      return result;
+    },
+
+    appendMessage,
+    update,
 
     updateResultSource(sessionId, { playlistSource, eqSource } = {}) {
-      return store.mutate(sessionId, session => {
+      return mutate(sessionId, session => {
         if (!session.result) throw new Error('会话或结果不存在');
         if (playlistSource !== undefined) session.result.playlistSource = playlistSource;
         if (eqSource !== undefined) session.result.eqSource = eqSource;
@@ -58,7 +129,7 @@ export function createSessionService({
     cart: {
       async add(sessionId, songs) {
         if (!Array.isArray(songs) || songs.length === 0) return null;
-        return store.mutate(sessionId, session => {
+        return mutate(sessionId, session => {
           session.cart = Array.isArray(session.cart) ? session.cart : [];
           const identityOf = song => trackKey(song) || String(song.id);
           const existing = new Set(session.cart.map(identityOf));
@@ -75,14 +146,14 @@ export function createSessionService({
 
       remove(sessionId, songIds) {
         const removeSet = new Set((Array.isArray(songIds) ? songIds : []).map(String));
-        return store.mutate(sessionId, session => {
+        return mutate(sessionId, session => {
           session.cart = (session.cart || []).filter(song => !removeSet.has(String(song.id)));
           return { total: session.cart.length };
         });
       },
 
       reorder(sessionId, orderedIds) {
-        return store.mutate(sessionId, session => {
+        return mutate(sessionId, session => {
           const cartById = new Map((session.cart || []).map(song => [String(song.id), song]));
           const next = [];
           for (const id of orderedIds) {
@@ -99,14 +170,14 @@ export function createSessionService({
       },
 
       clear(sessionId) {
-        return store.mutate(sessionId, session => {
+        return mutate(sessionId, session => {
           session.cart = [];
           return { total: 0 };
         });
       },
 
       setEq(sessionId, eq) {
-        return store.update(sessionId, { cartEq: eq || null });
+        return update(sessionId, { cartEq: eq || null });
       },
 
       /** 把购物车推给播放器，并把结果快照存进会话。 */
@@ -133,7 +204,7 @@ export function createSessionService({
           eqSource: session.result?.eqSource || null,
           settledAt: now(),
         };
-        await store.update(sessionId, { result, songCount: cart.length });
+        await update(sessionId, { result, songCount: cart.length });
         return { ok: true, count: cart.length, result };
       },
     },
@@ -184,6 +255,7 @@ export function createSessionService({
       }
 
       await store.setCurrent(id);
+      notify('switch', id);
       return result;
     },
 
@@ -193,7 +265,7 @@ export function createSessionService({
       if (!session) session = await store.create('新会话');
       const currentEq = session.cartEq || session.result?.eq || defaultEq();
       const messageId = newId('msg');
-      await store.appendMessage(session.id, {
+      await service.appendMessage(session.id, {
         id: messageId,
         role: 'agent',
         kind: 'eq-card',

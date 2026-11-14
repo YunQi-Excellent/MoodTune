@@ -36,6 +36,15 @@ let syncTimer = null;
 let lastSyncAt = 0;
 let syncInProgress = false;
 let suppressNextChange = false;
+let sessionBridge = null;
+
+/**
+ * 由 background 注册的会话仓储桥接。
+ * 会话正文不再经过 chrome.storage.local，导入导出统一走这里。
+ */
+export function setSessionBridge(bridge) {
+  sessionBridge = bridge;
+}
 
 /* ============ 状态 ============ */
 export async function getFsStatus() {
@@ -62,13 +71,25 @@ async function readFolderMeta(handle) {
 }
 
 /* ============ 内部：读取 storage 概览 ============ */
+async function readAllSessions() {
+  if (sessionBridge) return sessionBridge.listAll();
+  const data = await chrome.storage.local.get(KEYS.sessions);
+  return Array.isArray(data[KEYS.sessions]) ? data[KEYS.sessions] : [];
+}
+
+async function readCurrentSessionId() {
+  if (sessionBridge) return sessionBridge.currentId();
+  const data = await chrome.storage.local.get(KEYS.currentSessionId);
+  return data[KEYS.currentSessionId] || null;
+}
+
 async function readStorageSummary() {
   const data = await chrome.storage.local.get([
-    KEYS.playlists, KEYS.eqPresets, KEYS.sessions,
+    KEYS.playlists, KEYS.eqPresets,
   ]);
   const playlists = Array.isArray(data[KEYS.playlists]) ? data[KEYS.playlists] : [];
   const eqPresets = Array.isArray(data[KEYS.eqPresets]) ? data[KEYS.eqPresets] : [];
-  const sessions = Array.isArray(data[KEYS.sessions]) ? data[KEYS.sessions] : [];
+  const sessions = await readAllSessions();
   const isEmpty = playlists.length === 0 && eqPresets.length === 0 && sessions.length === 0;
   return {
     playlists, eqPresets, sessions, isEmpty,
@@ -110,6 +131,7 @@ export async function pullFromFolder() {
   if (!handle) return { ok: false, reason: 'no-handle' };
 
   const errors = [];
+  let pulledSessions = 0;
   try {
     suppressNextChange = true;
 
@@ -142,8 +164,15 @@ export async function pullFromFolder() {
           errors.push(`会话文件 ${metaItem.id}.json 缺失或损坏`);
         }
       }
-      if (sessions.length > 0) updates[KEYS.sessions] = sessions;
-      if (indexData.currentSessionId) updates[KEYS.currentSessionId] = indexData.currentSessionId;
+      if (sessions.length > 0) {
+        if (sessionBridge) {
+          await sessionBridge.replaceAll(sessions, indexData.currentSessionId || null);
+        } else {
+          updates[KEYS.sessions] = sessions;
+          if (indexData.currentSessionId) updates[KEYS.currentSessionId] = indexData.currentSessionId;
+        }
+        pulledSessions = sessions.length;
+      }
     } else if (indexData !== null) {
       errors.push('sessions/index.json 结构异常');
     }
@@ -161,11 +190,13 @@ export async function pullFromFolder() {
     lastSyncAt = Date.now();
     return {
       ok: true,
-      pulledKeys: appliedKeys,
+      pulledKeys: sessionBridge && pulledSessions > 0
+        ? [...appliedKeys, KEYS.sessions]
+        : appliedKeys,
       counts: {
         playlists: updates[KEYS.playlists]?.length || 0,
         eqPresets: updates[KEYS.eqPresets]?.length || 0,
-        sessions: updates[KEYS.sessions]?.length || 0,
+        sessions: sessionBridge ? pulledSessions : (updates[KEYS.sessions]?.length || 0),
       },
       warnings: errors,
     };
@@ -199,8 +230,7 @@ export async function pushToFolder(opts = {}) {
   syncInProgress = true;
   try {
     const { playlists, eqPresets, sessions } = summary;
-    const idR = await chrome.storage.local.get(KEYS.currentSessionId);
-    const currentSessionId = idR[KEYS.currentSessionId] || null;
+    const currentSessionId = await readCurrentSessionId();
 
     // 1) playlists.json
     await writeJson(handle, 'playlists.json', {

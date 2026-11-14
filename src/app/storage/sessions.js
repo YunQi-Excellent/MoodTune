@@ -28,7 +28,10 @@ function emptySession(id, name, createdAt) {
 }
 
 /**
- * 会话仓储：唯一负责 chatSessions / currentSessionId 的读写。
+ * 旧版 v1 会话仓储（chatSessions 单数组）。
+ *
+ * 生产运行时已经切到 src/app/storage/session-log.js 的 IndexedDB 日志仓储；
+ * 这个文件保留为迁移对照/回归测试，并作为没有 IndexedDB 的环境的参考实现。
  *
  * 所有方法都经过 storage 队列，因此并发调用不会丢写：
  * 例如 LLM 追加消息与用户把歌加入购物车同时发生时，

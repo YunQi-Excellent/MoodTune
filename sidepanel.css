@@ -1544,3 +1544,25 @@ html.dark .empty-chat .hint code {
   background: var(--brand-100);
   color: var(--brand-400);
 }
+
+/* 日志型会话：向上加载更早的消息 */
+.load-earlier {
+  align-self: center;
+  margin: 4px 0 10px;
+  padding: 6px 14px;
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 999px;
+  background: var(--bg-2, #fff);
+  color: var(--fg-2, #4b5563);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.load-earlier:hover {
+  background: var(--brand-50, #f5f3ff);
+  border-color: var(--brand-300, #c4b5fd);
+}
+.load-earlier:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
