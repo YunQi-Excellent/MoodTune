@@ -52,6 +52,12 @@
         <div class="player-title" id="playerTitle">未播放</div>
         <div class="player-artist" id="playerArtist">播放队列为空</div>
       </div>
+      <button class="player-mode-btn" id="playerMode" type="button"
+              data-mode="sequential" title="播放模式：顺序播放（点击切换）"
+              aria-label="播放模式：顺序播放">
+        <span id="playerModeIcon" aria-hidden="true">➡</span>
+        <span id="playerModeLabel">顺序</span>
+      </button>
     </div>
     <div class="player-progress-row">
       <span class="player-time" id="playerCurrent">0:00</span>
@@ -136,6 +142,7 @@
     </div>
     <div class="lib-tabs">
       <button class="lib-tab active" data-lib="sound">音效</button>
+      <button class="lib-tab" data-lib="local">本地<span class="count" id="localCount">0</span></button>
       <button class="lib-tab" data-lib="eq">调音<span class="count" id="eqCount">0</span></button>
       <button class="lib-tab" data-lib="playlists">播放列表<span class="count" id="plCount">0</span></button>
     </div>
@@ -167,6 +174,13 @@
           <div>
             <div class="dock-text">切换音效</div>
             <div class="dock-sub">一键换整套听感</div>
+          </div>
+        </button>
+        <button class="dock-item" data-dock="local">
+          <span class="dock-icon">💻</span>
+          <div>
+            <div class="dock-text">本地音乐</div>
+            <div class="dock-sub">扫描本机目录并播放</div>
           </div>
         </button>
         <button class="dock-item" data-dock="eq">

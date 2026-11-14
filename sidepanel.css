@@ -776,6 +776,37 @@ html.dark .player-cover-wrap {
   margin-top: 1px;
 }
 
+/* 播放模式：顺序 / 单曲 / 随机，点击循环切换 */
+.player-mode-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 24px; padding: 0 8px;
+  border: 1px solid var(--border);
+  background: var(--soft-bg);
+  color: var(--fg-2);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 10px; font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
+}
+.player-mode-btn:hover {
+  background: var(--soft-hover);
+  color: var(--fg-0);
+}
+.player-mode-btn:active { transform: scale(0.96); }
+.player-mode-btn[data-mode="repeat-one"],
+.player-mode-btn[data-mode="shuffle"] {
+  color: var(--brand-600);
+  background: var(--brand-50);
+  border-color: var(--brand-ring);
+}
+html.dark .player-mode-btn[data-mode="repeat-one"],
+html.dark .player-mode-btn[data-mode="shuffle"] {
+  color: var(--brand-400);
+}
+
 /* 进度条 */
 .player-progress-row {
   display: flex; align-items: center; gap: 8px;
@@ -1275,6 +1306,115 @@ html.dark .lib-tab.active { color: var(--brand-400); }
   color: var(--brand-600);
 }
 html.dark .lib-tab.active .count { color: var(--brand-400); }
+
+/* ---- 本地音乐（我的内容 → 本地） ---- */
+.local-status {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--soft-bg);
+  margin-bottom: 10px;
+}
+.local-status.warn {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: var(--yellow-50);
+}
+.local-status-title {
+  font-size: 12px; font-weight: 700; color: var(--fg-0);
+  margin-bottom: 4px;
+}
+.local-status-desc {
+  font-size: 11px; line-height: 1.6; color: var(--fg-2);
+}
+.local-actions {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
+}
+.local-actions .btn {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+}
+.local-note {
+  margin-top: 8px;
+  font-size: 10px; color: var(--fg-3);
+  font-family: ui-monospace, monospace;
+}
+.local-progress {
+  margin-top: 8px;
+  font-size: 10px; color: var(--brand-600);
+  font-family: ui-monospace, monospace;
+}
+html.dark .local-progress { color: var(--brand-400); }
+.local-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 6px;
+}
+.local-search {
+  flex: 1; min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card-bg);
+  color: var(--fg-0);
+  font: inherit; font-size: 11px;
+  outline: none;
+}
+.local-search:focus { border-color: var(--brand-500); }
+.local-toolbar .btn {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+}
+.local-count-line {
+  margin: 4px 2px 8px;
+  font-size: 10px; color: var(--fg-3);
+  font-family: ui-monospace, monospace;
+}
+.local-track-list { display: flex; flex-direction: column; gap: 4px; }
+.local-track {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.local-track:hover {
+  background: var(--soft-bg);
+  border-color: var(--border);
+}
+.local-play-btn, .local-add-btn {
+  flex: 0 0 auto;
+  width: 26px; height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--card-bg);
+  color: var(--fg-2);
+  font: inherit; font-size: 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.local-play-btn:hover, .local-add-btn:hover {
+  border-color: var(--brand-500);
+  color: var(--brand-600);
+  background: var(--brand-50);
+}
+.local-track-text { flex: 1; min-width: 0; }
+.local-track-title {
+  font-size: 11px; font-weight: 600; color: var(--fg-0);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.local-track-meta {
+  font-size: 10px; color: var(--fg-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.local-empty-tracks {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 11px; color: var(--fg-3);
+}
 
 /* ---- 音效卡片（我的内容 → 音效） ---- */
 .sound-intro {

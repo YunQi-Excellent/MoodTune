@@ -7,6 +7,7 @@ import { normalizeEffects } from './src/core/effects.js';
 import { normalizeEq } from './src/core/eq.js';
 import { sanitizeTrack } from './src/core/track.js';
 import { createProviderRegistry } from './src/providers/index.js';
+import { createLocalProvider } from './src/providers/local/index.js';
 
 import { createNeteaseExternalPlayer } from './src/app/background/netease-external-player.js';
 import { createMessageRouter } from './src/app/background/router.js';
@@ -14,12 +15,14 @@ import { registerBackgroundEvents } from './src/app/background/events.js';
 import { createChatHandlers } from './src/app/background/handlers/chat.js';
 import { createEqHandlers } from './src/app/background/handlers/eq.js';
 import { createFsHandlers } from './src/app/background/handlers/fs.js';
+import { createLocalHandlers } from './src/app/background/handlers/local.js';
 import { createMusicHandlers } from './src/app/background/handlers/music.js';
 import { createPlayerHandlers } from './src/app/background/handlers/player.js';
 import { createPlaylistHandlers } from './src/app/background/handlers/playlists.js';
 import { createSessionHandlers } from './src/app/background/handlers/sessions.js';
 import { createSoundHandlers } from './src/app/background/handlers/sound.js';
 import { createEqPresetService, createPlaylistService } from './src/app/services/assets.js';
+import { createLocalLibrary } from './src/app/services/local-library.js';
 import { createMusicService } from './src/app/services/music.js';
 import { createPlayerService } from './src/app/services/player.js';
 import { createPlayerPreferences } from './src/app/services/preferences.js';
@@ -58,6 +61,12 @@ const forwardToSidepanel = (type, payload) => {
 const musicProviders = createProviderRegistry({
   externalPlayer: createNeteaseExternalPlayer(),
 });
+
+// 本地目录不是远程平台：扫描/索引在宿主侧，provider 只查索引。
+const localLibrary = createLocalLibrary({ area: chrome.storage.local });
+musicProviders.register(createLocalProvider({
+  getIndex: () => localLibrary.getIndex(),
+}));
 
 /* =====================================================
    仓储
@@ -182,6 +191,12 @@ const routeMessage = createMessageRouter({
       syncNow: smartSync,
       forcePush: pushToFolder,
       pull: pullFromFolder,
+    }),
+
+    ...createLocalHandlers({
+      localLibrary,
+      player,
+      forwardToSidepanel,
     }),
 
     ...createMusicHandlers({

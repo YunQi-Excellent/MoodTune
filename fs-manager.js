@@ -8,7 +8,7 @@
 const DB_NAME = 'moodtune-fs';
 const DB_VERSION = 1;
 const STORE_NAME = 'handles';
-const HANDLE_KEY = 'dataFolder';
+const DEFAULT_HANDLE_KEY = 'dataFolder';
 
 /* ============ IndexedDB：存取 handle ============ */
 function openDb() {
@@ -25,22 +25,22 @@ function openDb() {
   });
 }
 
-export async function saveHandle(handle) {
+export async function saveHandle(handle, key = DEFAULT_HANDLE_KEY) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).put(handle, HANDLE_KEY);
+    tx.objectStore(STORE_NAME).put(handle, key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
-export async function loadHandle() {
+export async function loadHandle(key = DEFAULT_HANDLE_KEY) {
   try {
     const db = await openDb();
     return await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readonly');
-      const req = tx.objectStore(STORE_NAME).get(HANDLE_KEY);
+      const req = tx.objectStore(STORE_NAME).get(key);
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => reject(req.error);
     });
@@ -49,11 +49,11 @@ export async function loadHandle() {
   }
 }
 
-export async function clearHandle() {
+export async function clearHandle(key = DEFAULT_HANDLE_KEY) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).delete(HANDLE_KEY);
+    tx.objectStore(STORE_NAME).delete(key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

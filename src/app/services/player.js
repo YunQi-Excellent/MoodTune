@@ -1,4 +1,5 @@
 import { PLAYER_DEFAULTS } from '../../core/constants.js';
+import { normalizePlaybackMode } from '../../core/playback.js';
 
 /**
  * 播放器服务：把「跟播放器对话」收敛成一个对象。
@@ -25,7 +26,13 @@ export function createPlayerService({ send, providers, prefs, defaults = PLAYER_
   return {
     /* ---- 播放控制 ---- */
     getState: () => call('PLAYER_GET_STATE'),
-    setPlaylist: (songs, autoPlay = true) => call('PLAYER_SET_PLAYLIST', { songs, autoPlay }),
+    setPlaylist: (songs, autoPlay = true, startIndex) => call('PLAYER_SET_PLAYLIST', {
+      songs,
+      autoPlay,
+      ...(Number.isInteger(startIndex) ? { startIndex } : {}),
+    }),
+    setPlaybackMode: mode => call('PLAYER_SET_MODE', { mode }),
+    cyclePlaybackMode: () => call('PLAYER_CYCLE_MODE'),
 
     /* ---- EQ ---- */
     getEq: () => call('EQ_GET'),
@@ -48,6 +55,20 @@ export function createPlayerService({ send, providers, prefs, defaults = PLAYER_
       return provider.resolveStreamUrl(song);
     },
 
+    /**
+     * 播放源解析：远程平台返回 `{ kind:'url', url }`，
+     * 本地 provider 返回 `{ kind:'local', path }`，由 offscreen 读文件并生成 blob URL。
+     */
+    async resolvePlayback(song) {
+      if (!song) throw new Error('缺少歌曲信息');
+      const provider = song.provider ? providers.get(song.provider) : providers.primary;
+      if (!provider) throw new Error(`未注册的音乐平台：${song.provider || 'unknown'}`);
+      if (typeof provider.resolvePlayback === 'function') {
+        return provider.resolvePlayback(song);
+      }
+      return { kind: 'url', url: await provider.resolveStreamUrl(song) };
+    },
+
     async pauseExternal() {
       try {
         await providers.primary?.pauseExternalPlayback();
@@ -67,6 +88,10 @@ export function createPlayerService({ send, providers, prefs, defaults = PLAYER_
       prefs?.saveVolume(volume);
     },
 
+    savePlaybackMode(mode) {
+      prefs?.savePlaybackMode?.(mode);
+    },
+
     async loadPrefs() {
       const saved = prefs ? await prefs.load() : null;
       return {
@@ -74,6 +99,7 @@ export function createPlayerService({ send, providers, prefs, defaults = PLAYER_
         volume: typeof saved?.volume === 'number' ? saved.volume : defaults.volume,
         eq: saved?.eq || null,
         effects: saved?.effects || null,
+        playbackMode: normalizePlaybackMode(saved?.playbackMode ?? defaults.playbackMode),
       };
     },
   };

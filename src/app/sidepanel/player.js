@@ -1,5 +1,6 @@
 import { $ } from '../dom.js';
 import { fmtTime } from './format.js';
+import { PLAYBACK_MODE_META, normalizePlaybackMode } from '../../core/playback.js';
 
 /**
  * 播放栏控制器：绑定按钮、同步状态。
@@ -21,6 +22,9 @@ export function createPlayerControls({ send } = {}) {
     prev: $('#playerPrev'),
     next: $('#playerNext'),
     volume: $('#playerVolume'),
+    mode: $('#playerMode'),
+    modeIcon: $('#playerModeIcon'),
+    modeLabel: $('#playerModeLabel'),
   };
 
   let seeking = false;
@@ -31,6 +35,12 @@ export function createPlayerControls({ send } = {}) {
   els.play.addEventListener('click', () => send({ target: 'background', type: 'PLAYER_TOGGLE' }));
   els.next.addEventListener('click', () => send({ target: 'background', type: 'PLAYER_NEXT' }));
   els.prev.addEventListener('click', () => send({ target: 'background', type: 'PLAYER_PREV' }));
+
+  // 播放模式由 offscreen 持有，这里只请求切换并用返回状态立即刷新按钮。
+  els.mode.addEventListener('click', async () => {
+    const response = await send({ target: 'background', type: 'PLAYER_CYCLE_MODE' });
+    if (response?.ok && response.state) applyState(response.state);
+  });
 
   els.seek.addEventListener('pointerdown', () => { seeking = true; });
   els.seek.addEventListener('input', () => {
@@ -54,6 +64,16 @@ export function createPlayerControls({ send } = {}) {
     } else {
       els.cover.style.visibility = 'hidden';
     }
+  }
+
+  function renderPlaybackMode(mode) {
+    const normalized = normalizePlaybackMode(mode);
+    const meta = PLAYBACK_MODE_META[normalized];
+    els.mode.dataset.mode = normalized;
+    els.mode.title = `播放模式：${meta.label}（点击切换）`;
+    els.mode.setAttribute('aria-label', `播放模式：${meta.label}`);
+    els.modeIcon.textContent = meta.icon;
+    els.modeLabel.textContent = meta.shortLabel;
   }
 
   function applyState(next) {
@@ -84,6 +104,7 @@ export function createPlayerControls({ send } = {}) {
     }
     els.duration.textContent = fmtTime(next.duration);
     if (typeof next.volume === 'number') els.volume.value = next.volume;
+    renderPlaybackMode(next.playbackMode);
   }
 
   async function refresh() {

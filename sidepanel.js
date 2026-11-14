@@ -10,9 +10,11 @@ import {
 } from './src/core/sound-presets.js';
 
 import { $, $$ } from './src/app/dom.js';
-import { escapeHtml, fmtClock, fmtDate } from './src/app/sidepanel/format.js';
+import { escapeHtml, fmtClock, fmtDate, fmtDuration } from './src/app/sidepanel/format.js';
 import { renderAgentBody, renderPlanCard } from './src/app/sidepanel/cards.js';
 import { createPlayerControls } from './src/app/sidepanel/player.js';
+import { loadHandle, saveHandle } from './fs-manager.js';
+import { LOCAL_MUSIC_HANDLE_KEY } from './src/providers/local/constants.js';
 
 /* ================= 工具 ================= */
 const randId = (prefix = 'id') => createId(prefix);
@@ -38,6 +40,14 @@ const state = {
   currentEq: null,
   currentEffects: null,
   libraryTab: 'sound',
+  local: {
+    status: null,
+    tracks: [],
+    handle: null,
+    query: '',
+    scanning: false,
+    progress: null,
+  },
   messageNodes: new Map(),
   thinkingRecords: [],
   running: false,
@@ -266,14 +276,14 @@ function renderCartList() {
     return;
   }
   el.innerHTML = cart.map((s, i) => `
-    <div class="cart-item" draggable="true" data-id="${s.id}" data-index="${i}">
+    <div class="cart-item" draggable="true" data-id="${escapeHtml(String(s.id))}" data-index="${i}">
       <span class="handle">⋮⋮</span>
       ${s.cover ? `<img class="cover" src="${escapeHtml(s.cover)}" loading="lazy" alt="">` : '<div class="cover"></div>'}
       <div class="info">
         <div class="title">${escapeHtml(s.name)}</div>
         <div class="artist">${escapeHtml(s.artists)}</div>
       </div>
-      <button class="remove" data-remove="${s.id}" title="移除">✕</button>
+      <button class="remove" data-remove="${escapeHtml(String(s.id))}" title="移除">✕</button>
     </div>
   `).join('');
 }
@@ -304,11 +314,11 @@ function refreshPlanCards() {
 $('#cartList').addEventListener('click', async e => {
   const btn = e.target.closest('[data-remove]');
   if (!btn) return;
-  const id = Number(btn.getAttribute('data-remove'));
-  if (!Number.isFinite(id)) return;
+  const id = btn.getAttribute('data-remove');
+  if (id === null) return;
   const r = await sendMsg({ action: 'cartRemove', sessionId: state.currentSession.id, songIds: [id] });
   if (r?.ok) {
-    state.currentSession.cart = (state.currentSession.cart || []).filter(s => s.id !== id);
+    state.currentSession.cart = (state.currentSession.cart || []).filter(s => String(s.id) !== String(id));
     renderCartList();
     updateCartUI();
     refreshPlanCards();
@@ -319,7 +329,7 @@ let dragSrcId = null;
 $('#cartList').addEventListener('dragstart', e => {
   const item = e.target.closest('.cart-item');
   if (!item) return;
-  dragSrcId = Number(item.getAttribute('data-id'));
+  dragSrcId = item.getAttribute('data-id');
   item.classList.add('dragging');
   e.dataTransfer.effectAllowed = 'move';
 });
@@ -341,12 +351,12 @@ $('#cartList').addEventListener('drop', async e => {
   e.preventDefault();
   const item = e.target.closest('.cart-item');
   if (!item || dragSrcId === null) return;
-  const targetId = Number(item.getAttribute('data-id'));
+  const targetId = item.getAttribute('data-id');
   if (targetId === dragSrcId) return;
 
   const cart = state.currentSession.cart || [];
-  const srcIdx = cart.findIndex(s => s.id === dragSrcId);
-  const dstIdx = cart.findIndex(s => s.id === targetId);
+  const srcIdx = cart.findIndex(s => String(s.id) === String(dragSrcId));
+  const dstIdx = cart.findIndex(s => String(s.id) === String(targetId));
   if (srcIdx < 0 || dstIdx < 0) return;
 
   const next = [...cart];
@@ -405,7 +415,7 @@ $('#cartSettleBtn').addEventListener('click', async () => {
 });
 
 /* ================= 我的内容 抽屉 ================= */
-/** @param {'sound'|'eq'|'playlists'} [tab] 指定打开时停在哪一页 */
+/** @param {'sound'|'local'|'eq'|'playlists'} [tab] 指定打开时停在哪一页 */
 function openLibraryDrawer(tab) {
   if (typeof tab === 'string') {
     state.libraryTab = tab;
@@ -431,7 +441,8 @@ $$('.lib-tab').forEach(tab => {
 
 async function refreshLibrary() {
   const wantsSoundState = state.libraryTab === 'sound';
-  const [eqR, plR, soundR] = await Promise.all([
+  const wantsLocal = state.libraryTab === 'local';
+  const [eqR, plR, soundR, localStatusR, localListR, localHandle] = await Promise.all([
     sendMsg({ action: 'listEqPresets' }),
     sendMsg({ action: 'listSavedPlaylists' }),
     wantsSoundState
@@ -440,11 +451,25 @@ async function refreshLibrary() {
         sendMsg({ action: 'getEffectsState' }),
       ])
       : Promise.resolve(null),
+    sendMsg({ action: 'localStatus' }),
+    wantsLocal ? sendMsg({ action: 'localList' }) : Promise.resolve(null),
+    wantsLocal ? loadHandle(LOCAL_MUSIC_HANDLE_KEY).catch(() => null) : Promise.resolve(null),
   ]);
   state.eqPresets = eqR?.presets || [];
   state.savedPlaylists = plR?.playlists || [];
   $('#eqCount').textContent = state.eqPresets.length;
   $('#plCount').textContent = state.savedPlaylists.length;
+
+  if (localStatusR?.ok) {
+    state.local.status = localStatusR;
+    $('#localCount').textContent = String(localStatusR.trackCount || 0);
+  }
+  if (wantsLocal) {
+    state.local.tracks = localListR?.ok && Array.isArray(localListR.tracks)
+      ? localListR.tracks
+      : [];
+    state.local.handle = localHandle || null;
+  }
 
   if (soundR) {
     const [eqState, effectsState] = soundR;
@@ -455,6 +480,276 @@ async function refreshLibrary() {
   renderLibraryBody();
 }
 
+async function refreshLocal() {
+  const [statusR, listR, handle] = await Promise.all([
+    sendMsg({ action: 'localStatus' }),
+    sendMsg({ action: 'localList' }),
+    loadHandle(LOCAL_MUSIC_HANDLE_KEY).catch(() => null),
+  ]);
+  if (statusR?.ok) {
+    state.local.status = statusR;
+    $('#localCount').textContent = String(statusR.trackCount || 0);
+  }
+  state.local.tracks = listR?.ok && Array.isArray(listR.tracks) ? listR.tracks : [];
+  state.local.handle = handle || null;
+  renderLibraryBody();
+}
+
+function filteredLocalTracks() {
+  const term = state.local.query.trim().toLowerCase();
+  if (!term) return state.local.tracks;
+  return state.local.tracks.filter((track) => {
+    const haystack = `${track.name || ''} ${track.artists || ''} ${track.album || ''} ${track.providerId || ''}`
+      .toLowerCase();
+    return haystack.includes(term);
+  });
+}
+
+function localProgressText() {
+  const progress = state.local.progress || {};
+  return `正在扫描… 已检查 ${progress.scanned || 0} 个文件，已收录 ${progress.tracks || 0} 首`;
+}
+
+function renderLocalLibrary(body) {
+  const status = state.local.status || { state: 'unbound' };
+  const scanning = state.local.scanning;
+  const statusHtml = status.state === 'unbound'
+    ? `<div class="local-status">
+        <div class="local-status-title">💻 还没有绑定本地音乐目录</div>
+        <div class="local-status-desc">选择一个存放音乐的文件夹。MoodTune 只读取其中的音频文件，不复制、不上传。</div>
+        <div class="local-actions">
+          <button class="btn" data-act="local-bind">📂 选择音乐目录</button>
+        </div>
+        <div class="local-note">支持 mp3 / flac / m4a / aac / ogg / opus / wav / webm</div>
+      </div>`
+    : status.state === 'need-permission' || status.state === 'denied'
+      ? `<div class="local-status warn">
+          <div class="local-status-title">⚠️ 本地音乐目录需要重新授权</div>
+          <div class="local-status-desc">浏览器重启后文件权限会失效。目录：${escapeHtml(status.name || status.rootName || '已绑定目录')}</div>
+          <div class="local-actions">
+            <button class="btn" data-act="local-authorize">重新授权</button>
+            <button class="btn ghost" data-act="local-change">更换目录</button>
+            <button class="btn ghost" data-act="local-unbind">解除绑定</button>
+          </div>
+        </div>`
+      : `<div class="local-status">
+          <div class="local-status-title">📁 ${escapeHtml(status.name || status.rootName || '本地音乐')}</div>
+          <div class="local-status-desc">已收录 ${status.trackCount || 0} 首 · ${status.scannedAt ? `扫描于 ${escapeHtml(fmtDate(status.scannedAt))}` : '尚未扫描'}</div>
+          <div class="local-actions">
+            <button class="btn" data-act="local-rescan" ${scanning ? 'disabled' : ''}>${scanning ? '扫描中…' : '重新扫描'}</button>
+            <button class="btn ghost" data-act="local-change" ${scanning ? 'disabled' : ''}>更换目录</button>
+            <button class="btn ghost" data-act="local-unbind" ${scanning ? 'disabled' : ''}>解除绑定</button>
+          </div>
+          ${scanning ? `<div class="local-progress" id="localScanStatus">${escapeHtml(localProgressText())}</div>` : ''}
+        </div>`;
+
+  if (scanning && status.state === 'bound') {
+    body.innerHTML = statusHtml;
+    return;
+  }
+
+  if (status.state !== 'bound') {
+    body.innerHTML = statusHtml;
+    return;
+  }
+
+  const filtered = filteredLocalTracks();
+  const shown = filtered.slice(0, 300);
+  const tracksHtml = shown.length
+    ? shown.map((track, index) => {
+      const duration = fmtDuration(track.durationMs);
+      const meta = [track.artists, track.album, duration !== '--:--' ? duration : '']
+        .filter(Boolean)
+        .join(' · ');
+      return `
+        <div class="local-track">
+          <button class="local-play-btn" data-act="local-play-one" data-index="${index}" title="播放">▶</button>
+          <div class="local-track-text">
+            <div class="local-track-title">${escapeHtml(track.name || '未知歌曲')}</div>
+            <div class="local-track-meta">${escapeHtml(meta)}</div>
+          </div>
+          <button class="local-add-btn" data-act="local-add-cart" data-index="${index}" title="加入会话歌单">＋</button>
+        </div>`;
+    }).join('')
+    : '<div class="local-empty-tracks">没有找到匹配的本地歌曲</div>';
+
+  body.innerHTML = `
+    ${statusHtml}
+    <div class="local-toolbar">
+      <input class="local-search" id="localSearch" type="search" placeholder="搜索歌名 / 歌手 / 专辑"
+             value="${escapeHtml(state.local.query)}" autocomplete="off">
+      <button class="btn" data-act="local-play-all" ${filtered.length ? '' : 'disabled'}>播放全部</button>
+    </div>
+    <div class="local-count-line">${filtered.length} 首${filtered.length > shown.length ? ` · 仅显示前 ${shown.length} 首` : ''}</div>
+    <div class="local-track-list">${tracksHtml}</div>
+  `;
+}
+
+async function pickLocalFolder() {
+  if (typeof window.showDirectoryPicker !== 'function') {
+    pushLog('err', '当前浏览器不支持本地目录选择，请升级 Chrome');
+    return;
+  }
+
+  let handle;
+  try {
+    handle = await window.showDirectoryPicker({ mode: 'read' });
+  } catch (e) {
+    if (e?.name !== 'AbortError') pushLog('err', '选择目录失败：' + (e?.message || e));
+    return;
+  }
+  if (!handle) return;
+
+  try {
+    await saveHandle(handle, LOCAL_MUSIC_HANDLE_KEY);
+  } catch (e) {
+    pushLog('err', '保存目录授权失败：' + (e?.message || e));
+    return;
+  }
+
+  state.local.handle = handle;
+  state.local.query = '';
+  state.local.status = {
+    ...(state.local.status || {}),
+    state: 'bound',
+    name: handle.name || '',
+  };
+  await scanLocalLibrary();
+}
+
+async function authorizeLocalFolder() {
+  const handle = state.local.handle;
+  if (!handle) {
+    pushLog('err', '没有找到已绑定的目录，请重新选择');
+    return;
+  }
+
+  try {
+    const permission = await handle.requestPermission({ mode: 'read' });
+    if (permission !== 'granted') {
+      pushLog('err', '没有获得目录读取权限');
+      await refreshLocal();
+      return;
+    }
+  } catch (e) {
+    pushLog('err', '重新授权失败：' + (e?.message || e));
+    return;
+  }
+
+  state.local.status = { ...(state.local.status || {}), state: 'bound' };
+  await scanLocalLibrary();
+}
+
+async function scanLocalLibrary() {
+  if (state.local.scanning) return;
+  state.local.scanning = true;
+  state.local.progress = { scanned: 0, tracks: 0 };
+  renderLibraryBody();
+
+  const result = await sendMsg({ action: 'localScan' });
+  state.local.scanning = false;
+  state.local.progress = null;
+
+  if (!result?.ok) {
+    const reason = result?.reason === 'need-permission'
+      ? '目录权限已失效，请点「重新授权」'
+      : result?.error || result?.reason || '未知错误';
+    pushLog('err', '扫描本地音乐失败：' + reason);
+    await refreshLocal();
+    return;
+  }
+
+  const skipped = result.skipped ? `，跳过 ${result.skipped} 个文件` : '';
+  pushLog('ok', `本地音乐已收录 ${result.trackCount || 0} 首${skipped}${result.truncated ? '（已达到收录上限）' : ''}`);
+  await refreshLocal();
+}
+
+async function playLocalTracks(tracks, startIndex = 0) {
+  if (!Array.isArray(tracks) || tracks.length === 0) return;
+  const r = await sendMsg({ action: 'localPlay', tracks, startIndex });
+  if (r?.ok) {
+    pushLog('ok', `开始播放本地音乐：${r.count} 首`);
+    player.refresh();
+  } else {
+    pushLog('err', '播放本地音乐失败：' + (r?.error || '未知'));
+  }
+}
+
+async function addLocalTrackToCart(track) {
+  if (!track) return;
+  let session = state.currentSession;
+  if (!session) {
+    const created = await sendMsg({ action: 'createSession', name: '本地音乐' });
+    if (!created?.ok) {
+      pushLog('err', '创建会话失败：' + (created?.error || '未知'));
+      return;
+    }
+    state.currentSession = created.session;
+    updateHeaderSessionName();
+  }
+
+  const r = await sendMsg({
+    action: 'cartAdd',
+    sessionId: state.currentSession.id,
+    songs: [track],
+  });
+  if (r?.ok) {
+    const fresh = await sendMsg({ action: 'getCurrentSession' });
+    if (fresh?.ok) state.currentSession = fresh.session;
+    updateCartUI();
+    refreshPlanCards();
+    pushLog('ok', `已加入会话歌单：${track.name || ''}`);
+  } else {
+    pushLog('err', '加入会话歌单失败：' + (r?.error || '未知'));
+  }
+}
+
+async function handleLocalAction(act, btn) {
+  if (act === 'local-bind' || act === 'local-change') {
+    await pickLocalFolder();
+    return;
+  }
+  if (act === 'local-authorize') {
+    await authorizeLocalFolder();
+    return;
+  }
+  if (act === 'local-rescan') {
+    await scanLocalLibrary();
+    return;
+  }
+  if (act === 'local-unbind') {
+    if (!confirm('解除本地音乐目录绑定？索引会一起清除，但不会删除你的音乐文件。')) return;
+    const r = await sendMsg({ action: 'localClear' });
+    if (!r?.ok) {
+      pushLog('err', '解除绑定失败：' + (r?.error || '未知'));
+      return;
+    }
+    state.local.status = null;
+    state.local.tracks = [];
+    state.local.handle = null;
+    state.local.query = '';
+    $('#localCount').textContent = '0';
+    pushLog('ok', '已解除本地音乐目录绑定');
+    renderLibraryBody();
+    return;
+  }
+  if (act === 'local-play-all') {
+    await playLocalTracks(filteredLocalTracks(), 0);
+    return;
+  }
+  if (act === 'local-play-one') {
+    const index = Number(btn?.getAttribute('data-index'));
+    if (!Number.isInteger(index)) return;
+    await playLocalTracks(filteredLocalTracks(), index);
+    return;
+  }
+  if (act === 'local-add-cart') {
+    const index = Number(btn?.getAttribute('data-index'));
+    if (!Number.isInteger(index)) return;
+    await addLocalTrackToCart(filteredLocalTracks()[index]);
+  }
+}
+
 /** 当前生效的音效（用状态指纹匹配，手动拧过滑块会自动失去「使用中」）。 */
 function currentSoundPreset() {
   if (!state.currentEq) return null;
@@ -463,6 +758,11 @@ function currentSoundPreset() {
 
 function renderLibraryBody() {
   const body = $('#libraryBody');
+
+  if (state.libraryTab === 'local') {
+    renderLocalLibrary(body);
+    return;
+  }
 
   if (state.libraryTab === 'sound') {
     const active = currentSoundPreset();
@@ -606,6 +906,11 @@ $('#libraryBody').addEventListener('click', async e => {
   const act = btn.getAttribute('data-act');
   const id = btn.getAttribute('data-id');
 
+  if (state.libraryTab === 'local') {
+    await handleLocalAction(act, btn);
+    return;
+  }
+
   if (state.libraryTab === 'eq') {
     if (act === 'apply') {
       btn.disabled = true; btn.textContent = '应用中…';
@@ -695,6 +1000,18 @@ $('#libraryBody').addEventListener('click', async e => {
   }
 });
 
+$('#libraryBody').addEventListener('input', e => {
+  if (e.target.id !== 'localSearch' || e.isComposing) return;
+  const caret = e.target.selectionStart ?? e.target.value.length;
+  state.local.query = e.target.value;
+  renderLibraryBody();
+  const next = $('#localSearch');
+  if (next) {
+    next.focus();
+    next.setSelectionRange(caret, caret);
+  }
+});
+
 /* ================= 日志抽屉 ================= */
 const logs = [];
 function pushLog(level, text) {
@@ -748,6 +1065,10 @@ $('#dock-drawer').addEventListener('click', async e => {
 
   if (dock === 'sound') {
     openLibraryDrawer('sound');
+    return;
+  }
+  if (dock === 'local') {
+    openLibraryDrawer('local');
     return;
   }
   if (dock === 'eq') {
@@ -1315,6 +1636,12 @@ chrome.runtime.onMessage.addListener((msg) => {
     player.applyState(msg.payload);
     return;
   }
+  if (msg.target === 'sidepanel' && msg.type === 'LOCAL_SCAN_PROGRESS') {
+    state.local.progress = msg.payload;
+    const el = $('#localScanStatus');
+    if (el) el.textContent = localProgressText();
+    return;
+  }
   if (msg.target === 'sidepanel' && msg.type === 'CHAT_STREAM_CHUNK') {
     const sid = msg.payload?.sessionId;
     if (sid && sid !== state.currentSession?.id) return;
@@ -1364,6 +1691,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   if (area === 'local' && (changes.eqPresets || changes.savedPlaylists)) {
     if ($('#library-drawer').classList.contains('open')) refreshLibrary();
+  }
+  if (area === 'local' && changes.localMusicLibrary && state.libraryTab === 'local') {
+    if ($('#library-drawer').classList.contains('open') && !state.local.scanning) refreshLibrary();
   }
 });
 
